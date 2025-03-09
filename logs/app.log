@@ -1,0 +1,10 @@
+{"level":"info","message":"Мок API Wildberries активирован","timestamp":"2025-03-07T00:44:40.285Z"}
+{"level":"info","message":"Проверка подключения к БД...","timestamp":"2025-03-07T00:44:40.289Z"}
+{"code":"ENOTFOUND","errno":-3008,"hostname":"postgres","level":"error","message":"Ошибка подключения к БД: getaddrinfo ENOTFOUND postgres","stack":"Error: getaddrinfo ENOTFOUND postgres\n    at D:\\WB-assistant\\wb-assistant-0.1.2\\node_modules\\pg-pool\\index.js:45:11\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at checkConnection (D:\\WB-assistant\\wb-assistant-0.1.2\\src\\utils\\db.ts:77:20)\n    at init (D:\\WB-assistant\\wb-assistant-0.1.2\\src\\index.ts:42:25)","syscall":"getaddrinfo","timestamp":"2025-03-07T00:44:42.569Z"}
+{"level":"info","message":"Мок API Wildberries активирован","timestamp":"2025-03-07T00:45:22.829Z"}
+{"level":"info","message":"Сервер запущен на http://0.0.0.0:3000","timestamp":"2025-03-07T00:45:22.842Z"}
+{"level":"info","message":"Мок API доступен на http://0.0.0.0:3000/mock-api","timestamp":"2025-03-07T00:45:22.842Z"}
+{"level":"info","message":"Мок API Wildberries активирован","timestamp":"2025-03-07T00:46:31.262Z"}
+{"level":"info","message":"Сервер запущен на http://localhost:3000","timestamp":"2025-03-07T00:46:31.277Z"}
+{"level":"info","message":"Мок API доступен на http://localhost:3000/mock-api","timestamp":"2025-03-07T00:46:31.278Z"}
+{"body":{},"level":"info","message":"Входящий запрос","method":"GET","path":"/","query":{},"timestamp":"2025-03-07T00:46:40.060Z"}

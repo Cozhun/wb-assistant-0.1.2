@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - wb-network
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.client.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.client.entrypoints=web"
+      - "traefik.http.services.client.loadbalancer.server.port=80"
+    depends_on:
+      - server
+    networks:
+      - wb-network
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.server.rule=PathPrefix(`/api`)"
+      - "traefik.http.routers.server.entrypoints=web"
+      - "traefik.http.services.server.loadbalancer.server.port=3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - wb-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:14-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=wb_assistant
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wb-network
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wb-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  wb-network:
+    driver: bridge 

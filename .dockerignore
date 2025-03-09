@@ -1,0 +1,35 @@
+# Зависимости
+node_modules
+npm-debug.log
+
+# Исходники
+.git
+.gitignore
+
+# Логи и данные
+logs
+*.log
+data
+
+# IDE
+.idea
+.vscode
+
+# Тесты
+coverage
+.nyc_output
+
+# Сборка
+dist
+build
+
+# Окружение
+.env.local
+.env.*.local
+
+# Прочее
+.DS_Store
+*.pem
+*.pid
+*.seed
+*.pid.lock 
