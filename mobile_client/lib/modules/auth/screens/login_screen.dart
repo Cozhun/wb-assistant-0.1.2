@@ -38,6 +38,11 @@ class _LoginScreenState extends State<LoginScreen> {
   
   /// Проверка авторизации при запуске
   Future<void> _checkAuth() async {
+    // Убедимся, что StorageService инициализирован
+    if (!_storageService.isInitialized) {
+      await _storageService.init();
+    }
+    
     await Future.delayed(const Duration(milliseconds: 500));
     
     // Если пользователь уже авторизован, переходим сразу к заказам
@@ -62,6 +67,11 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     
     try {
+      // Убедимся, что StorageService инициализирован
+      if (!_storageService.isInitialized) {
+        await _storageService.init();
+      }
+      
       final response = await _apiService.login(
         _usernameController.text,
         _passwordController.text,

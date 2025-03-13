@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'app/routes/app_router.dart';
+import 'app/services/api_service.dart';
+import 'app/services/storage_service.dart';
+import 'dart:io' show Platform;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // Инициализация Hive для локального хранения
   await Hive.initFlutter();
+  
+  // Инициализация сервиса хранения (синглтон)
+  await StorageService().init();
   
   // Установка ориентации экрана
   await SystemChrome.setPreferredOrientations([
@@ -33,15 +40,161 @@ class MyApp extends StatelessWidget {
           foregroundColor: Colors.white,
         ),
       ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
-      themeMode: ThemeMode.system,
       routerConfig: appRouter,
     );
   }
 }
+
+// Сохраняем экран для тестирования соединения на случай необходимости
+// Раскомментируйте следующее и измените MaterialApp в MyApp для использования
+/*
+class ConnectionTestScreen extends StatefulWidget {
+  const ConnectionTestScreen({super.key});
+
+  @override
+  State<ConnectionTestScreen> createState() => _ConnectionTestScreenState();
+}
+
+class _ConnectionTestScreenState extends State<ConnectionTestScreen> {
+  final ApiService _apiService = ApiService();
+  String _connectionStatus = 'Нажмите кнопку для проверки соединения';
+  bool _isLoading = false;
+  
+  Future<void> _testConnection() async {
+    setState(() {
+      _isLoading = true;
+      _connectionStatus = 'Проверка соединения...';
+    });
+    
+    try {
+      // Проверяем соединение с API
+      final response = await _apiService.testConnection();
+      setState(() {
+        _connectionStatus = 'Соединение с API установлено!\n'
+            'Статус: ${response['status']}\n'
+            'Сообщение: ${response['message']}';
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _connectionStatus = 'Ошибка соединения: $e';
+        _isLoading = false;
+      });
+    }
+  }
+  
+  Future<void> _testLogin() async {
+    setState(() {
+      _isLoading = true;
+      _connectionStatus = 'Попытка авторизации...';
+    });
+    
+    try {
+      // Пробуем авторизоваться с тестовыми данными
+      final response = await _apiService.login('test', 'password');
+      setState(() {
+        _connectionStatus = 'Авторизация успешна!\n'
+            'Ответ: $response';
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _connectionStatus = 'Ошибка авторизации: $e';
+        _isLoading = false;
+      });
+    }
+  }
+  
+  // Тестирование явного URL
+  Future<void> _testExplicitUrl(String url) async {
+    setState(() {
+      _isLoading = true;
+      _connectionStatus = 'Проверка соединения с $url...';
+    });
+    
+    try {
+      final response = await _apiService.testUrl(url);
+      setState(() {
+        _connectionStatus = 'Соединение с $url установлено!\n'
+            'Статус: ${response['status']}\n'
+            'Сообщение: ${response['message']}';
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _connectionStatus = 'Ошибка соединения с $url: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Проверка подключения'),
+      ),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                _connectionStatus,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 20),
+              if (_isLoading)
+                const CircularProgressIndicator()
+              else
+                Column(
+                  children: [
+                    ElevatedButton(
+                      onPressed: _testConnection,
+                      child: const Text('Проверить соединение с API'),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: _testLogin,
+                      child: const Text('Проверить авторизацию'),
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Проверка конкретных URL:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: () => _testExplicitUrl('http://192.168.1.72'),
+                      child: const Text('Проверить IP физического устройства'),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: () => _testExplicitUrl('http://10.0.2.2'),
+                      child: const Text('Проверить IP эмулятора'),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: () => _testExplicitUrl('http://localhost'),
+                      child: const Text('Проверить localhost'),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Информация о системе:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Text('Устройство: ${Platform.isAndroid ? "Android" : Platform.isIOS ? "iOS" : "Другое"}'),
+                    Text('Web режим: ${kIsWeb ? "Да" : "Нет"}'),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+*/
