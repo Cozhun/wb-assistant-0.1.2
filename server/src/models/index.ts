@@ -1,32 +1,38 @@
-import { Pool, QueryResult } from 'pg';
-import config from '../config/config';
+import db from '../utils/db';
 import logger from '../utils/logger';
+import config from '../config/config';
 
-// Создаем пул подключений
-const pool = new Pool({
-  host: config.database.host,
-  port: config.database.port,
-  user: config.database.user,
-  password: config.database.password,
-  database: config.database.database,
-});
-
-// Базовый класс для моделей
+/**
+ * Базовый класс модели для работы с базой данных
+ * Обеспечивает базовые методы для работы с PostgreSQL
+ */
 export class BaseModel {
-  // Выполнение запроса с параметрами
-  protected static async query<T>(sql: string, params: any[] = []): Promise<QueryResult<T>> {
-    logger.debug(`Executing SQL: ${sql}, params: ${JSON.stringify(params)}`);
+  /**
+   * Выполняет SQL запрос к базе данных
+   * @param sql SQL запрос
+   * @param params Параметры запроса (опционально)
+   * @returns Результат запроса
+   */
+  protected static async query<T>(sql: string, params: any[] = []): Promise<{ rows: T[], rowCount: number }> {
     try {
-      return await pool.query<T>(sql, params);
+      const result = await db.query(sql, params);
+      return {
+        rows: result.rows as T[],
+        rowCount: result.rowCount || 0
+      };
     } catch (error) {
       logger.error('Database query error:', error);
       throw error;
     }
   }
 
-  // Транзакция
-  protected static async transaction<T>(callback: (client: any) => Promise<T>): Promise<T> {
-    const client = await pool.connect();
+  /**
+   * Выполняет запрос в транзакции
+   * @param callback Функция с SQL запросами
+   * @returns Результат выполнения callback
+   */
+  protected static async withTransaction<T>(callback: (client: any) => Promise<T>): Promise<T> {
+    const client = await db.connect();
     try {
       await client.query('BEGIN');
       const result = await callback(client);
@@ -42,16 +48,15 @@ export class BaseModel {
   }
 }
 
-// Экспорт моделей
-export * from './enterprise.model';
+// Экспортируем модели
 export * from './user.model';
-export * from './warehouse.model';
-export * from './product.model';
-export * from './inventory.model';
+export * from './enterprise.model';
 export * from './request.model';
+export * from './product.model';
+export * from './warehouse.model';
+export * from './inventory.model';
 export * from './order.model';
 export * from './printer.model';
-export * from './metric.model';
 export * from './setting.model';
 
-export default pool; 
+export default db; 

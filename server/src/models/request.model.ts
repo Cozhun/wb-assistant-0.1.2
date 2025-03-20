@@ -61,32 +61,16 @@ export interface RequestEvent {
 export class RequestModel extends BaseModel {
   // Получение типов запросов
   static async getRequestTypes(): Promise<RequestType[]> {
-    const sql = `
-      SELECT * FROM RequestTypes
-      ORDER BY RequestTypeId
-    `;
+    const sql = 'SELECT * FROM RequestTypes WHERE IsActive = TRUE ORDER BY Name';
     const result = await this.query<RequestType>(sql);
     return result.rows;
   }
 
   // Получение статусов запросов
   static async getRequestStatuses(): Promise<RequestStatus[]> {
-    const sql = `
-      SELECT * FROM RequestStatuses
-      ORDER BY StatusId
-    `;
+    const sql = 'SELECT * FROM RequestStatuses WHERE IsActive = TRUE ORDER BY DisplayOrder';
     const result = await this.query<RequestStatus>(sql);
     return result.rows;
-  }
-
-  // Получение запроса по ID
-  static async getById(requestId: number): Promise<Request | null> {
-    const sql = `
-      SELECT * FROM Requests
-      WHERE RequestId = $1
-    `;
-    const result = await this.query<Request>(sql, [requestId]);
-    return result.rows.length ? result.rows[0] : null;
   }
 
   // Получение списка запросов по предприятию
@@ -203,6 +187,16 @@ export class RequestModel extends BaseModel {
     return mapping[field] || 'CreatedAt';
   }
 
+  // Получение запроса по ID
+  static async getById(requestId: number): Promise<Request | null> {
+    const sql = `
+      SELECT * FROM Requests
+      WHERE RequestId = $1
+    `;
+    const result = await this.query<Request>(sql, [requestId]);
+    return result.rows.length ? result.rows[0] : null;
+  }
+
   // Создание нового запроса
   static async create(request: Request): Promise<Request> {
     return this.transaction(async (client) => {
@@ -253,7 +247,10 @@ export class RequestModel extends BaseModel {
       await client.query(eventSql, [
         result.rows[0].requestid,
         request.createdBy,
-        JSON.stringify({ statusId: request.statusId, message: 'Запрос создан' })
+        JSON.stringify({
+          requestTypeId: request.requestTypeId,
+          statusId: request.statusId
+        })
       ]);
 
       return result.rows[0];
@@ -261,177 +258,218 @@ export class RequestModel extends BaseModel {
   }
 
   // Обновление запроса
-  static async update(requestId: number, request: Partial<Request>, userId: number): Promise<Request | null> {
+  static async update(requestId: number, data: Partial<Request>, userId: number): Promise<Request | null> {
     return this.transaction(async (client) => {
-      // Получаем текущий запрос
-      const currentResult = await client.query(`
-        SELECT * FROM Requests WHERE RequestId = $1
-      `, [requestId]);
-      
+      // Получаем текущее состояние запроса
+      const currentResult = await client.query(
+        'SELECT * FROM Requests WHERE RequestId = $1',
+        [requestId]
+      );
+
       if (!currentResult.rows.length) {
         return null;
       }
-      
+
       const currentRequest = currentResult.rows[0];
-      
-      // Собираем поля для обновления
-      const fields: string[] = [];
+
+      // Формируем SQL для обновления
+      const updates: string[] = [];
       const values: any[] = [];
-      let paramIndex = 1;
-      const changes: any = {};
+      let valueIndex = 1;
 
-      if (request.requestTypeId !== undefined) {
-        fields.push(`RequestTypeId = $${paramIndex++}`);
-        values.push(request.requestTypeId);
-        changes.requestTypeId = { from: currentRequest.requesttypeid, to: request.requestTypeId };
+      if (data.title !== undefined) {
+        updates.push(`Title = $${valueIndex++}`);
+        values.push(data.title);
       }
 
-      if (request.title !== undefined) {
-        fields.push(`Title = $${paramIndex++}`);
-        values.push(request.title);
-        changes.title = { from: currentRequest.title, to: request.title };
+      if (data.description !== undefined) {
+        updates.push(`Description = $${valueIndex++}`);
+        values.push(data.description);
       }
 
-      if (request.description !== undefined) {
-        fields.push(`Description = $${paramIndex++}`);
-        values.push(request.description);
-        changes.description = { from: currentRequest.description, to: request.description };
+      if (data.requestTypeId !== undefined) {
+        updates.push(`RequestTypeId = $${valueIndex++}`);
+        values.push(data.requestTypeId);
       }
 
-      if (request.statusId !== undefined && request.statusId !== currentRequest.statusid) {
-        fields.push(`StatusId = $${paramIndex++}`);
-        values.push(request.statusId);
-        changes.statusId = { from: currentRequest.statusid, to: request.statusId };
-        
-        // Если статус изменился на завершенный, устанавливаем дату завершения
-        if ([3, 4, 5].includes(request.statusId)) { // Предполагаемые ID для завершенных статусов
-          fields.push(`CompletedAt = CURRENT_TIMESTAMP`);
-          changes.completedAt = { to: new Date() };
-        }
+      if (data.statusId !== undefined) {
+        updates.push(`StatusId = $${valueIndex++}`);
+        values.push(data.statusId);
       }
 
-      if (request.priority !== undefined) {
-        fields.push(`Priority = $${paramIndex++}`);
-        values.push(request.priority);
-        changes.priority = { from: currentRequest.priority, to: request.priority };
+      if (data.priority !== undefined) {
+        updates.push(`Priority = $${valueIndex++}`);
+        values.push(data.priority);
       }
 
-      if (request.estimatedCompletionDate !== undefined) {
-        fields.push(`EstimatedCompletionDate = $${paramIndex++}`);
-        values.push(request.estimatedCompletionDate);
-        changes.estimatedCompletionDate = { 
-          from: currentRequest.estimatedcompletiondate, 
-          to: request.estimatedCompletionDate 
-        };
+      if (data.estimatedCompletionDate !== undefined) {
+        updates.push(`EstimatedCompletionDate = $${valueIndex++}`);
+        values.push(data.estimatedCompletionDate);
       }
 
-      if (request.assignedTo !== undefined) {
-        fields.push(`AssignedTo = $${paramIndex++}`);
-        values.push(request.assignedTo);
-        changes.assignedTo = { from: currentRequest.assignedto, to: request.assignedTo };
+      if (data.assignedTo !== undefined) {
+        updates.push(`AssignedTo = $${valueIndex++}`);
+        values.push(data.assignedTo);
       }
 
-      // Всегда обновляем дату обновления
-      fields.push(`UpdatedAt = CURRENT_TIMESTAMP`);
+      if (data.completedAt !== undefined) {
+        updates.push(`CompletedAt = $${valueIndex++}`);
+        values.push(data.completedAt);
+      }
 
-      // Если нет полей для обновления, возвращаем текущий запрос
-      if (fields.length === 0) {
+      // Всегда обновляем дату изменения
+      updates.push(`UpdatedAt = CURRENT_TIMESTAMP`);
+
+      // Если нет изменений, возвращаем текущее состояние
+      if (updates.length === 1) {
         return currentRequest;
       }
 
-      // Обновляем запрос
+      // Выполняем обновление
       const sql = `
         UPDATE Requests
-        SET ${fields.join(', ')}
-        WHERE RequestId = $${paramIndex}
+        SET ${updates.join(', ')}
+        WHERE RequestId = $${valueIndex++}
         RETURNING *
       `;
-      values.push(requestId);
 
+      values.push(requestId);
       const result = await client.query(sql, values);
 
-      // Записываем событие обновления запроса
-      if (Object.keys(changes).length > 0) {
-        const eventSql = `
-          INSERT INTO RequestEvents (
-            RequestId, UserId, EventType, Details
+      // Записываем событие обновления
+      const changes: any = {};
+      if (data.title !== undefined && data.title !== currentRequest.title) {
+        changes.title = { from: currentRequest.title, to: data.title };
+      }
+      if (data.description !== undefined && data.description !== currentRequest.description) {
+        changes.description = { from: currentRequest.description, to: data.description };
+      }
+      if (data.requestTypeId !== undefined && data.requestTypeId !== currentRequest.requesttypeid) {
+        changes.requestTypeId = { from: currentRequest.requesttypeid, to: data.requestTypeId };
+      }
+      if (data.statusId !== undefined && data.statusId !== currentRequest.statusid) {
+        changes.statusId = { from: currentRequest.statusid, to: data.statusId };
+      }
+      if (data.priority !== undefined && data.priority !== currentRequest.priority) {
+        changes.priority = { from: currentRequest.priority, to: data.priority };
+      }
+      if (data.estimatedCompletionDate !== undefined && 
+          data.estimatedCompletionDate !== currentRequest.estimatedcompletiondate) {
+        changes.estimatedCompletionDate = { 
+          from: currentRequest.estimatedcompletiondate, 
+          to: data.estimatedCompletionDate 
+        };
+      }
+      if (data.assignedTo !== undefined && data.assignedTo !== currentRequest.assignedto) {
+        changes.assignedTo = { from: currentRequest.assignedto, to: data.assignedTo };
+      }
+      if (data.completedAt !== undefined && data.completedAt !== currentRequest.completedat) {
+        changes.completedAt = { from: currentRequest.completedat, to: data.completedAt };
+      }
+
+      const eventSql = `
+        INSERT INTO RequestEvents (
+          RequestId, UserId, EventType, Details
+        ) VALUES (
+          $1, $2, 'UPDATE', $3
+        )
+      `;
+
+      await client.query(eventSql, [
+        requestId,
+        userId,
+        JSON.stringify(changes)
+      ]);
+
+      return result.rows[0];
+    });
+  }
+
+  // Обновление статуса запроса
+  static async updateStatus(
+    requestId: number, 
+    statusId: number, 
+    userId: number, 
+    comment?: string
+  ): Promise<Request | null> {
+    return this.transaction(async (client) => {
+      // Получаем текущее состояние запроса
+      const currentResult = await client.query(
+        'SELECT * FROM Requests WHERE RequestId = $1',
+        [requestId]
+      );
+
+      if (!currentResult.rows.length) {
+        return null;
+      }
+
+      const currentRequest = currentResult.rows[0];
+      const currentStatusId = currentRequest.statusid;
+
+      // Если статус не изменился, просто возвращаем запрос
+      if (currentStatusId === statusId) {
+        return currentRequest;
+      }
+
+      // Обновляем статус
+      const sql = `
+        UPDATE Requests
+        SET StatusId = $1, UpdatedAt = CURRENT_TIMESTAMP,
+            CompletedAt = CASE WHEN 
+              (SELECT IsCompletedStatus FROM RequestStatuses WHERE StatusId = $1) = TRUE 
+              THEN CURRENT_TIMESTAMP ELSE CompletedAt END
+        WHERE RequestId = $2
+        RETURNING *
+      `;
+
+      const result = await client.query(sql, [statusId, requestId]);
+
+      // Записываем событие изменения статуса
+      const eventSql = `
+        INSERT INTO RequestEvents (
+          RequestId, UserId, EventType, Details
+        ) VALUES (
+          $1, $2, 'STATUS_CHANGE', $3
+        )
+      `;
+
+      await client.query(eventSql, [
+        requestId,
+        userId,
+        JSON.stringify({
+          from: currentStatusId,
+          to: statusId,
+          comment: comment
+        })
+      ]);
+
+      // Если передан комментарий, добавляем его
+      if (comment) {
+        const commentSql = `
+          INSERT INTO RequestComments (
+            RequestId, UserId, Comment
           ) VALUES (
-            $1, $2, 'UPDATE', $3
+            $1, $2, $3
           )
         `;
-
-        await client.query(eventSql, [
-          requestId,
-          userId,
-          JSON.stringify(changes)
-        ]);
+        await client.query(commentSql, [requestId, userId, comment]);
       }
 
       return result.rows[0];
     });
   }
 
-  // Назначение исполнителя запроса
-  static async assignRequest(requestId: number, assignedTo: number, userId: number): Promise<boolean> {
+  // Добавление элемента запроса
+  static async addRequestItem(item: RequestItem): Promise<RequestItem> {
     return this.transaction(async (client) => {
       // Проверяем существование запроса
-      const checkSql = `
-        SELECT AssignedTo FROM Requests WHERE RequestId = $1
-      `;
-      const checkResult = await client.query(checkSql, [requestId]);
+      const checkSql = `SELECT * FROM Requests WHERE RequestId = $1`;
+      const checkResult = await client.query(checkSql, [item.requestId]);
       
       if (!checkResult.rows.length) {
-        return false;
+        throw new Error(`Request with ID ${item.requestId} not found`);
       }
       
-      const currentAssignedTo = checkResult.rows[0].assignedto;
-      
-      // Обновляем запрос
-      const sql = `
-        UPDATE Requests
-        SET AssignedTo = $1, UpdatedAt = CURRENT_TIMESTAMP
-        WHERE RequestId = $2
-      `;
-      await client.query(sql, [assignedTo, requestId]);
-      
-      // Записываем событие
-      const eventSql = `
-        INSERT INTO RequestEvents (
-          RequestId, UserId, EventType, Details
-        ) VALUES (
-          $1, $2, 'ASSIGN', $3
-        )
-      `;
-      
-      await client.query(eventSql, [
-        requestId,
-        userId,
-        JSON.stringify({ 
-          assignedTo: { 
-            from: currentAssignedTo, 
-            to: assignedTo 
-          } 
-        })
-      ]);
-      
-      return true;
-    });
-  }
-
-  // Получение элементов запроса
-  static async getRequestItems(requestId: number): Promise<RequestItem[]> {
-    const sql = `
-      SELECT * FROM RequestItems
-      WHERE RequestId = $1
-      ORDER BY RequestItemId
-    `;
-    const result = await this.query<RequestItem>(sql, [requestId]);
-    return result.rows;
-  }
-
-  // Добавление элемента в запрос
-  static async addRequestItem(requestItem: RequestItem, userId: number): Promise<RequestItem> {
-    return this.transaction(async (client) => {
       // Создаем элемент запроса
       const sql = `
         INSERT INTO RequestItems (
@@ -442,11 +480,11 @@ export class RequestModel extends BaseModel {
       `;
       
       const result = await client.query(sql, [
-        requestItem.requestId,
-        requestItem.productId,
-        requestItem.quantity,
-        requestItem.statusId,
-        requestItem.comment || null
+        item.requestId,
+        item.productId,
+        item.quantity,
+        item.statusId,
+        item.comment || null
       ]);
       
       // Записываем событие
@@ -454,178 +492,37 @@ export class RequestModel extends BaseModel {
         INSERT INTO RequestEvents (
           RequestId, UserId, EventType, Details
         ) VALUES (
-          $1, $2, 'ADD_ITEM', $3
+          $1, 
+          (SELECT CreatedBy FROM Requests WHERE RequestId = $1),
+          'ITEM_ADD',
+          $2
         )
       `;
       
       await client.query(eventSql, [
-        requestItem.requestId,
-        userId,
-        JSON.stringify({ 
+        item.requestId,
+        JSON.stringify({
           requestItemId: result.rows[0].requestitemid,
-          productId: requestItem.productId,
-          quantity: requestItem.quantity
-        })
-      ]);
-      
-      // Обновляем дату обновления запроса
-      await client.query(`
-        UPDATE Requests
-        SET UpdatedAt = CURRENT_TIMESTAMP
-        WHERE RequestId = $1
-      `, [requestItem.requestId]);
-      
-      return result.rows[0];
-    });
-  }
-
-  // Обновление элемента запроса
-  static async updateRequestItem(
-    requestItemId: number, 
-    requestItem: Partial<RequestItem>, 
-    userId: number
-  ): Promise<RequestItem | null> {
-    return this.transaction(async (client) => {
-      // Получаем текущий элемент
-      const currentResult = await client.query(`
-        SELECT * FROM RequestItems WHERE RequestItemId = $1
-      `, [requestItemId]);
-      
-      if (!currentResult.rows.length) {
-        return null;
-      }
-      
-      const currentItem = currentResult.rows[0];
-      
-      // Собираем поля для обновления
-      const fields: string[] = [];
-      const values: any[] = [];
-      let paramIndex = 1;
-      const changes: any = {};
-
-      if (requestItem.quantity !== undefined) {
-        fields.push(`Quantity = $${paramIndex++}`);
-        values.push(requestItem.quantity);
-        changes.quantity = { from: currentItem.quantity, to: requestItem.quantity };
-      }
-
-      if (requestItem.statusId !== undefined) {
-        fields.push(`StatusId = $${paramIndex++}`);
-        values.push(requestItem.statusId);
-        changes.statusId = { from: currentItem.statusid, to: requestItem.statusId };
-      }
-
-      if (requestItem.comment !== undefined) {
-        fields.push(`Comment = $${paramIndex++}`);
-        values.push(requestItem.comment);
-        changes.comment = { from: currentItem.comment, to: requestItem.comment };
-      }
-
-      // Всегда обновляем дату обновления
-      fields.push(`UpdatedAt = CURRENT_TIMESTAMP`);
-
-      // Если нет полей для обновления, возвращаем текущий элемент
-      if (fields.length === 0) {
-        return currentItem;
-      }
-
-      // Обновляем элемент
-      const sql = `
-        UPDATE RequestItems
-        SET ${fields.join(', ')}
-        WHERE RequestItemId = $${paramIndex}
-        RETURNING *
-      `;
-      values.push(requestItemId);
-
-      const result = await client.query(sql, values);
-
-      // Записываем событие обновления
-      if (Object.keys(changes).length > 0) {
-        const eventSql = `
-          INSERT INTO RequestEvents (
-            RequestId, UserId, EventType, Details
-          ) VALUES (
-            $1, $2, 'UPDATE_ITEM', $3
-          )
-        `;
-
-        await client.query(eventSql, [
-          currentItem.requestid,
-          userId,
-          JSON.stringify({
-            requestItemId,
-            ...changes
-          })
-        ]);
-        
-        // Обновляем дату обновления запроса
-        await client.query(`
-          UPDATE Requests
-          SET UpdatedAt = CURRENT_TIMESTAMP
-          WHERE RequestId = $1
-        `, [currentItem.requestid]);
-      }
-
-      return result.rows[0];
-    });
-  }
-
-  // Удаление элемента запроса
-  static async deleteRequestItem(requestItemId: number, userId: number): Promise<boolean> {
-    return this.transaction(async (client) => {
-      // Получаем информацию об элементе
-      const itemResult = await client.query(`
-        SELECT * FROM RequestItems WHERE RequestItemId = $1
-      `, [requestItemId]);
-      
-      if (!itemResult.rows.length) {
-        return false;
-      }
-      
-      const item = itemResult.rows[0];
-      
-      // Удаляем элемент
-      const sql = `
-        DELETE FROM RequestItems
-        WHERE RequestItemId = $1
-      `;
-      
-      await client.query(sql, [requestItemId]);
-      
-      // Записываем событие
-      const eventSql = `
-        INSERT INTO RequestEvents (
-          RequestId, UserId, EventType, Details
-        ) VALUES (
-          $1, $2, 'DELETE_ITEM', $3
-        )
-      `;
-      
-      await client.query(eventSql, [
-        item.requestid,
-        userId,
-        JSON.stringify({ 
-          requestItemId,
-          productId: item.productid,
+          productId: item.productId,
           quantity: item.quantity
         })
       ]);
       
-      // Обновляем дату обновления запроса
-      await client.query(`
-        UPDATE Requests
-        SET UpdatedAt = CURRENT_TIMESTAMP
-        WHERE RequestId = $1
-      `, [item.requestid]);
-      
-      return true;
+      return result.rows[0];
     });
   }
 
-  // Добавление комментария к запросу
+  // Добавление комментария
   static async addComment(comment: RequestComment): Promise<RequestComment> {
     return this.transaction(async (client) => {
+      // Проверяем существование запроса
+      const checkSql = `SELECT * FROM Requests WHERE RequestId = $1`;
+      const checkResult = await client.query(checkSql, [comment.requestId]);
+      
+      if (!checkResult.rows.length) {
+        throw new Error(`Request with ID ${comment.requestId} not found`);
+      }
+      
       // Добавляем комментарий
       const sql = `
         INSERT INTO RequestComments (
@@ -641,19 +538,12 @@ export class RequestModel extends BaseModel {
         comment.comment
       ]);
       
-      // Обновляем дату обновления запроса
-      await client.query(`
-        UPDATE Requests
-        SET UpdatedAt = CURRENT_TIMESTAMP
-        WHERE RequestId = $1
-      `, [comment.requestId]);
-      
       // Записываем событие
       const eventSql = `
         INSERT INTO RequestEvents (
           RequestId, UserId, EventType, Details
         ) VALUES (
-          $1, $2, 'ADD_COMMENT', $3
+          $1, $2, 'COMMENT_ADD', $3
         )
       `;
       
@@ -669,97 +559,108 @@ export class RequestModel extends BaseModel {
     });
   }
 
-  // Получение комментариев к запросу
-  static async getComments(requestId: number): Promise<RequestComment[]> {
-    const sql = `
-      SELECT * FROM RequestComments
-      WHERE RequestId = $1
-      ORDER BY CreatedAt DESC
-    `;
-    const result = await this.query<RequestComment>(sql, [requestId]);
-    return result.rows;
-  }
-
-  // Получение истории событий запроса
-  static async getRequestEvents(requestId: number): Promise<RequestEvent[]> {
-    const sql = `
-      SELECT * FROM RequestEvents
-      WHERE RequestId = $1
-      ORDER BY CreatedAt DESC
-    `;
-    const result = await this.query<RequestEvent>(sql, [requestId]);
-    return result.rows;
-  }
-
-  // Получение детальной информации о запросе
-  static async getRequestDetails(requestId: number): Promise<any> {
+  // Назначение исполнителя запроса
+  static async assignRequest(requestId: number, assignedTo: number, userId: number): Promise<Request | null> {
     return this.transaction(async (client) => {
-      // Получаем основную информацию о запросе
-      const requestResult = await client.query(`
-        SELECT r.*, 
-          rt.Name as RequestTypeName,
-          rs.Name as StatusName,
-          rs.Color as StatusColor,
-          uc.FirstName as CreatorFirstName,
-          uc.LastName as CreatorLastName,
-          ua.FirstName as AssigneeFirstName,
-          ua.LastName as AssigneeLastName
-        FROM Requests r
-        LEFT JOIN RequestTypes rt ON r.RequestTypeId = rt.RequestTypeId
-        LEFT JOIN RequestStatuses rs ON r.StatusId = rs.StatusId
-        LEFT JOIN Users uc ON r.CreatedBy = uc.UserId
-        LEFT JOIN Users ua ON r.AssignedTo = ua.UserId
-        WHERE r.RequestId = $1
-      `, [requestId]);
+      // Получаем текущий реквест
+      const currentResult = await client.query(
+        `SELECT * FROM Requests WHERE RequestId = $1`,
+        [requestId]
+      );
       
-      if (!requestResult.rows.length) {
+      if (!currentResult.rows.length) {
         return null;
       }
       
-      // Получаем элементы запроса
-      const itemsResult = await client.query(`
-        SELECT ri.*, 
-          p.Name as ProductName,
-          p.SKU as ProductSKU,
-          p.Barcode as ProductBarcode,
-          rs.Name as StatusName,
-          rs.Color as StatusColor
-        FROM RequestItems ri
-        LEFT JOIN Products p ON ri.ProductId = p.ProductId
-        LEFT JOIN RequestStatuses rs ON ri.StatusId = rs.StatusId
-        WHERE ri.RequestId = $1
-        ORDER BY ri.RequestItemId
-      `, [requestId]);
+      const currentRequest = currentResult.rows[0];
       
-      // Получаем комментарии
-      const commentsResult = await client.query(`
-        SELECT rc.*,
-          u.FirstName,
-          u.LastName
-        FROM RequestComments rc
-        LEFT JOIN Users u ON rc.UserId = u.UserId
-        WHERE rc.RequestId = $1
-        ORDER BY rc.CreatedAt DESC
-      `, [requestId]);
+      // Обновляем исполнителя
+      const sql = `
+        UPDATE Requests
+        SET AssignedTo = $1, UpdatedAt = CURRENT_TIMESTAMP
+        WHERE RequestId = $2
+        RETURNING *
+      `;
       
-      // Получаем события
-      const eventsResult = await client.query(`
-        SELECT re.*,
-          u.FirstName,
-          u.LastName
-        FROM RequestEvents re
-        LEFT JOIN Users u ON re.UserId = u.UserId
-        WHERE re.RequestId = $1
-        ORDER BY re.CreatedAt DESC
-      `, [requestId]);
+      const result = await client.query(sql, [assignedTo, requestId]);
       
-      // Формируем результат
-      return {
-        request: requestResult.rows[0],
-        items: itemsResult.rows,
-        comments: commentsResult.rows,
-        events: eventsResult.rows
-      };
+      if (result.rows.length === 0) {
+        return null;
+      }
+      
+      // Записываем событие
+      await client.query(
+        `INSERT INTO RequestEvents 
+          (RequestId, UserId, EventType, Details) 
+        VALUES 
+          ($1, $2, 'ASSIGN', $3)`,
+        [
+          requestId, 
+          userId, 
+          JSON.stringify({
+            oldAssignee: currentRequest.assignedto,
+            newAssignee: assignedTo
+          })
+        ]
+      );
+      
+      return result.rows[0];
     });
+  }
+
+  // Получение комментариев к реквесту
+  static async getComments(requestId: number): Promise<RequestComment[]> {
+    const sql = `
+      SELECT 
+        RC.CommentId,
+        RC.RequestId,
+        RC.UserId,
+        RC.Comment,
+        RC.CreatedAt,
+        U.UserName,
+        U.Email
+      FROM RequestComments RC
+      LEFT JOIN Users U ON RC.UserId = U.UserId
+      WHERE RC.RequestId = $1
+      ORDER BY RC.CreatedAt DESC
+    `;
+    
+    const result = await this.query<RequestComment & { username: string; email: string }>(sql, [requestId]);
+    return result.rows;
+  }
+
+  // Получение элементов реквеста
+  static async getRequestItems(requestId: number): Promise<RequestItem[]> {
+    const sql = `
+      SELECT 
+        RI.*,
+        P.Name AS ProductName,
+        P.SKU,
+        P.Description AS ProductDescription
+      FROM RequestItems RI
+      LEFT JOIN Products P ON RI.ProductId = P.ProductId
+      WHERE RI.RequestId = $1
+      ORDER BY RI.RequestItemId
+    `;
+    
+    const result = await this.query<RequestItem & { productname: string; sku: string; productdescription: string }>(sql, [requestId]);
+    return result.rows;
+  }
+
+  // Получение событий реквеста
+  static async getRequestEvents(requestId: number): Promise<RequestEvent[]> {
+    const sql = `
+      SELECT 
+        RE.*,
+        U.UserName,
+        U.Email
+      FROM RequestEvents RE
+      LEFT JOIN Users U ON RE.UserId = U.UserId
+      WHERE RE.RequestId = $1
+      ORDER BY RE.CreatedAt DESC
+    `;
+    
+    const result = await this.query<RequestEvent & { username: string; email: string }>(sql, [requestId]);
+    return result.rows;
   }
 } 

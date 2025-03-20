@@ -5,8 +5,8 @@ WORKDIR /app
 # Копируем файлы зависимостей
 COPY package*.json ./
 
-# Устанавливаем зависимости
-RUN npm install
+# Устанавливаем зависимости и TypeScript глобально
+RUN npm install && npm install -g typescript
 
 # Копируем исходный код
 COPY . .
