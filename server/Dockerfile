@@ -1,19 +1,35 @@
-FROM node:20-alpine
+# Используем актуальную версию Node.js
+FROM node:18-alpine
 
+# Создаем директорию приложения
 WORKDIR /app
 
-# Копируем файлы зависимостей
+# Установка зависимостей
 COPY package*.json ./
+RUN npm ci --only=production
 
-# Устанавливаем зависимости и TypeScript глобально
-RUN npm install && npm install -g typescript
-
-# Копируем исходный код
+# Копирование исходного кода
 COPY . .
 
-# Собираем приложение
-RUN npm run build
+# Создаем директорию для логов
+RUN mkdir -p logs && chmod 777 logs
 
+# Переменные окружения
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV CORS_ORIGIN="*"
+
+# Экспонируем порт, на котором запускается приложение
 EXPOSE 3000
 
-CMD ["npm", "start"] 
+# Установка healthcheck
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
+    CMD wget --quiet --tries=1 --spider http://localhost:3000/healthcheck || exit 1
+
+# Запуск приложения
+CMD ["node", "src/app.js"]
+
+# Метаданные
+LABEL maintainer="WB Assistant Team"
+LABEL version="0.1.2"
+LABEL description="API сервер для WB Assistant" 

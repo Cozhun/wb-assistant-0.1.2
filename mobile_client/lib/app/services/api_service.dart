@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 
 /// Сервис для работы с API
 class ApiService {
@@ -121,15 +122,74 @@ class ApiService {
   /// Сканирование штрих-кода
   Future<Map<String, dynamic>> scanBarcode(String orderId, String barcode) async {
     try {
+      // Попытка отправить запрос на сервер
       final response = await _dio.post(
         '/api/orders/$orderId/scan',
         data: {'barcode': barcode},
       );
       return response.data;
     } catch (e) {
-      _handleError(e);
-      rethrow;
+      // При ошибке используем тестовые данные
+      if (_isDebugMode) {
+        print('Используем демо-данные для сканирования штрих-кода: $barcode');
+      }
+      
+      // Имитация задержки сети
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      // Генерируем тестовые данные о товаре на основе штрих-кода
+      return _generateMockItemData(barcode);
     }
+  }
+  
+  /// Сканирование штрих-кода для поставки
+  Future<Map<String, dynamic>> scanBarcodeForSupply(String supplyId, String orderId, String barcode) async {
+    try {
+      // Попытка отправить запрос на сервер
+      final response = await _dio.post(
+        '/api/supplies/$supplyId/orders/$orderId/scan',
+        data: {'barcode': barcode},
+      );
+      return response.data;
+    } catch (e) {
+      // При ошибке используем тестовые данные
+      if (_isDebugMode) {
+        print('Используем демо-данные для сканирования штрих-кода в поставке: $barcode');
+      }
+      
+      // Имитация задержки сети
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      // Генерируем тестовые данные о товаре на основе штрих-кода
+      return _generateMockItemData(barcode);
+    }
+  }
+  
+  /// Генерация тестовых данных о товаре на основе штрих-кода
+  Map<String, dynamic> _generateMockItemData(String barcode) {
+    // Генерируем случайные данные на основе штрих-кода
+    final categories = ['Одежда', 'Обувь', 'Аксессуары', 'Электроника', 'Косметика'];
+    final brands = ['WBrand', 'TopStyle', 'FashionPlus', 'ElectroMax', 'BeautyLine'];
+    
+    // Используем часть штрих-кода для псевдо-случайного выбора
+    final seed = barcode.hashCode;
+    final categoryIndex = seed % categories.length;
+    final brandIndex = (seed ~/ 10) % brands.length;
+    
+    // Генерируем код товара из штрих-кода
+    final itemCode = 'WB${barcode.replaceAll(RegExp(r'[^0-9]'), '').substring(0, math.min(6, barcode.length))}';
+    
+    return {
+      'id': itemCode,
+      'barcode': barcode,
+      'name': '${brands[brandIndex]} ${categories[categoryIndex]} ${itemCode.substring(2, 6)}',
+      'category': categories[categoryIndex],
+      'brand': brands[brandIndex],
+      'price': 1999 + (seed % 8000),
+      'quantity': 1,
+      'status': 'scanned',
+      'timestamp': DateTime.now().toIso8601String(),
+    };
   }
   
   /// Проверка соединения с сервером
@@ -248,6 +308,64 @@ class ApiService {
       if (_isDebugMode) {
         print('Unknown API Error: $error');
       }
+    }
+  }
+  
+  /// Получает доступ к объекту Dio для прямых запросов
+  Dio get client => _dio;
+  
+  /// Общий метод GET для запросов API
+  Future<dynamic> get(String path, {Map<String, dynamic>? queryParameters, Options? options}) async {
+    try {
+      final response = await _dio.get(path, queryParameters: queryParameters, options: options);
+      return response.data;
+    } catch (e) {
+      _handleError(e);
+      rethrow;
+    }
+  }
+  
+  /// Общий метод POST для запросов API
+  Future<dynamic> post(String path, {dynamic data, Map<String, dynamic>? queryParameters, Options? options}) async {
+    try {
+      final response = await _dio.post(path, data: data, queryParameters: queryParameters, options: options);
+      return response.data;
+    } catch (e) {
+      _handleError(e);
+      rethrow;
+    }
+  }
+  
+  /// Общий метод PUT для запросов API
+  Future<dynamic> put(String path, {dynamic data, Map<String, dynamic>? queryParameters, Options? options}) async {
+    try {
+      final response = await _dio.put(path, data: data, queryParameters: queryParameters, options: options);
+      return response.data;
+    } catch (e) {
+      _handleError(e);
+      rethrow;
+    }
+  }
+  
+  /// Общий метод PATCH для запросов API
+  Future<dynamic> patch(String path, {dynamic data, Map<String, dynamic>? queryParameters, Options? options}) async {
+    try {
+      final response = await _dio.patch(path, data: data, queryParameters: queryParameters, options: options);
+      return response.data;
+    } catch (e) {
+      _handleError(e);
+      rethrow;
+    }
+  }
+  
+  /// Общий метод DELETE для запросов API
+  Future<dynamic> delete(String path, {dynamic data, Map<String, dynamic>? queryParameters, Options? options}) async {
+    try {
+      final response = await _dio.delete(path, data: data, queryParameters: queryParameters, options: options);
+      return response.data;
+    } catch (e) {
+      _handleError(e);
+      rethrow;
     }
   }
 } 

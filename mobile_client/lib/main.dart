@@ -1,11 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'app/routes/app_router.dart';
-import 'app/services/api_service.dart';
-import 'app/services/storage_service.dart';
+import 'package:mobile_client/app/routes/app_router.dart';
+import 'package:mobile_client/app/services/api_service.dart';
+import 'package:mobile_client/app/services/storage_service.dart';
+import 'package:mobile_client/ui/common/theme/app_theme.dart';
+import 'package:mobile_client/ui/common/theme/theme_provider.dart';
+import 'package:provider/provider.dart';
 import 'dart:io' show Platform;
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:mobile_client/app/services/notification_service.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+
+// Глобальный экземпляр маршрутизатора
+final appRouter = AppRouter().router;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +33,12 @@ void main() async {
     DeviceOrientation.portraitDown,
   ]);
 
-  runApp(const MyApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => ThemeProvider(),
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -30,17 +46,41 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Получаем провайдер темы
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    
+    // Если настройки еще загружаются, показываем заглушку
+    if (themeProvider.isLoading) {
+      return const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: CircularProgressIndicator(),
+          ),
+        ),
+      );
+    }
+    
+    // Используем адаптивную тему на основе настроек
+    final theme = AppTheme.getTheme(context, isDark: themeProvider.isDarkMode);
+    
     return MaterialApp.router(
       title: 'WB Assistant',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.blue,
-          foregroundColor: Colors.white,
-        ),
-      ),
+      theme: theme,
       routerConfig: appRouter,
+      // Добавляем полную поддержку локализации
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+        DefaultMaterialLocalizations.delegate,
+        DefaultWidgetsLocalizations.delegate,
+        DefaultCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('ru', 'RU'), // Русский
+        Locale('en', 'US'), // Английский
+      ],
+      locale: const Locale('ru', 'RU'), // Устанавливаем русский по умолчанию
     );
   }
 }

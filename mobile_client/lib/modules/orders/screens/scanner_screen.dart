@@ -4,10 +4,38 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/services/api_service.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../services/supply_service.dart';
+import '../models/order.dart';
 
-/// Экран сканирования
+/// Экран сканирования и верификации продуктов
 class ScannerScreen extends StatefulWidget {
-  const ScannerScreen({super.key});
+  /// ID поставки, если сканирование происходит в контексте поставки
+  final String? supplyId;
+  
+  /// ID заказа, если сканирование происходит для конкретного заказа
+  final String? orderId;
+  
+  /// Функция обратного вызова после завершения сканирования
+  final VoidCallback? onScanComplete;
+  
+  /// Режим инвентаризации
+  final bool inventoryMode;
+  
+  /// Элемент инвентаризации (если сканируем конкретный товар)
+  final dynamic inventoryItem;
+  
+  /// ID сессии инвентаризации (если в режиме инвентаризации)
+  final String? inventorySessionId;
+
+  const ScannerScreen({
+    super.key, 
+    this.supplyId, 
+    this.orderId,
+    this.onScanComplete,
+    this.inventoryMode = false,
+    this.inventoryItem,
+    this.inventorySessionId,
+  });
 
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
@@ -15,6 +43,7 @@ class ScannerScreen extends StatefulWidget {
 
 class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserver {
   final _apiService = ApiService();
+  final _supplyService = SupplyService();
   final _barcodeController = TextEditingController();
   late final MobileScannerController _scannerController;
   
@@ -24,12 +53,127 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   String? _errorMessage;
   String? _currentOrderId;
   bool _isScanning = false;
+  bool _isInSupplyContext = false;
+  bool _isInOrderContext = false;
+  
+  Order? _currentOrder;
+  List<Order>? _supplyOrders;
+  List<ProductItem> _unverifiedProducts = [];
+  int _currentProductIndex = 0;
   
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scannerController = MobileScannerController();
+    
+    // Проверяем контекст запуска сканера
+    _isInSupplyContext = widget.supplyId != null;
+    _isInOrderContext = widget.orderId != null;
+    
+    if (_isInSupplyContext) {
+      if (_isInOrderContext) {
+        // Загружаем конкретный заказ
+        _loadOrderDetails();
+      } else {
+        // Загружаем все заказы поставки
+        _loadSupplyDetails();
+      }
+    }
+    
+    // Автоматически запускаем сканер
+    _toggleScanner();
+  }
+  
+  /// Загружаем данные о заказе для верификации
+  Future<void> _loadOrderDetails() async {
+    if (widget.orderId == null) return;
+    
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      final supplies = await _supplyService.getMockSupplies();
+      final supply = supplies.firstWhere(
+        (s) => s.id == widget.supplyId,
+        orElse: () => throw Exception('Поставка не найдена'),
+      );
+      
+      // Находим заказ по ID
+      final order = supply.orders.firstWhere(
+        (o) => o.id == widget.orderId,
+        orElse: () => throw Exception('Заказ не найден'),
+      );
+      
+      // Создаем список продуктов для верификации
+      final unverifiedProducts = order.item.products
+          .where((p) => !p.isVerified)
+          .toList();
+      
+      setState(() {
+        _currentOrder = order;
+        _currentOrderId = order.id;
+        _unverifiedProducts = unverifiedProducts;
+        _currentProductIndex = unverifiedProducts.isEmpty ? -1 : 0;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Не удалось загрузить данные о заказе: $e';
+      });
+    }
+  }
+  
+  /// Загружаем данные о поставке для контекста сканирования
+  Future<void> _loadSupplyDetails() async {
+    if (widget.supplyId == null) return;
+    
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      final supplies = await _supplyService.getMockSupplies();
+      final supply = supplies.firstWhere(
+        (s) => s.id == widget.supplyId,
+        orElse: () => throw Exception('Поставка не найдена'),
+      );
+      
+      // Фильтруем заказы, которые ещё не собраны
+      final incompleteOrders = supply.orders
+          .where((o) => !o.isPacked && !o.impossibleToCollect)
+          .toList();
+      
+      // Автоматически выбираем первый невыполненный заказ из поставки
+      Order? firstOrder;
+      if (incompleteOrders.isNotEmpty) {
+        firstOrder = incompleteOrders.first;
+        
+        // Создаем список продуктов для верификации
+        final unverifiedProducts = firstOrder.item.products
+            .where((p) => !p.isVerified)
+            .toList();
+        
+        setState(() {
+          _currentOrder = firstOrder;
+          _currentOrderId = firstOrder?.id; // Используем оператор ?. для безопасного доступа
+          _unverifiedProducts = unverifiedProducts;
+          _currentProductIndex = unverifiedProducts.isEmpty ? -1 : 0;
+        });
+      }
+      
+      setState(() {
+        _supplyOrders = incompleteOrders;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Не удалось загрузить данные о поставке: $e';
+      });
+    }
   }
   
   @override
@@ -64,317 +208,502 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     });
   }
   
-  /// Обработка результата сканирования
+  /// Обработка результата сканирования штрих-кода
   void _onBarcodeDetect(BarcodeCapture capture) {
-    if (capture.barcodes.isEmpty) return;
-    
     final barcode = capture.barcodes.first.rawValue;
-    if (barcode == null) return;
     
-    setState(() {
-      _isScanning = false;
-      _lastScannedBarcode = barcode;
-      _barcodeController.text = barcode;
-    });
-    
-    _scannerController.stop();
-    
-    // Если заказ уже выбран, автоматически отправляем штрих-код
-    if (_currentOrderId != null) {
-      _submitBarcode();
+    if (barcode == null || barcode.isEmpty || barcode == _lastScannedBarcode) {
+      return;
     }
+    
+    _lastScannedBarcode = barcode;
+    
+    // Воспроизводим звуковой сигнал об успешном сканировании
+    HapticFeedback.mediumImpact();
+    
+    // Заполняем поле ввода и автоматически отправляем код
+    _barcodeController.text = barcode;
+    _submitBarcode();
   }
   
-  /// Отправка штрих-кода на сервер
+  /// Отправка штрих-кода на обработку
   Future<void> _submitBarcode() async {
-    final barcode = _barcodeController.text;
+    final barcode = _barcodeController.text.trim();
+    
     if (barcode.isEmpty) {
       setState(() {
-        _errorMessage = 'Введите или отсканируйте штрих-код';
+        _errorMessage = 'Введите штрих-код';
       });
       return;
     }
     
-    if (_currentOrderId == null) {
-      setState(() {
-        _errorMessage = 'Выберите заказ для сканирования';
-      });
-      return;
-    }
-    
+    // Сбрасываем предыдущие сообщения
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
       _successMessage = null;
+      _errorMessage = null;
     });
     
     try {
-      final result = await _apiService.scanBarcode(_currentOrderId!, barcode);
+      // Проверяем, что у нас есть текущий заказ и продукты для верификации
+      if (_currentOrder == null) {
+        throw Exception('Заказ не выбран');
+      }
+      
+      if (_unverifiedProducts.isEmpty) {
+        throw Exception('Все продукты уже верифицированы');
+      }
+      
+      if (_currentProductIndex < 0 || _currentProductIndex >= _unverifiedProducts.length) {
+        throw Exception('Некорректный индекс продукта');
+      }
+      
+      // Получаем текущий продукт для верификации
+      final currentProduct = _unverifiedProducts[_currentProductIndex];
+      
+      // Проверяем, соответствует ли отсканированный штрихкод текущему продукту
+      if (currentProduct.barcode != barcode) {
+        throw Exception('Штрих-код не соответствует ожидаемому продукту "${currentProduct.name}"');
+      }
+      
+      // В реальной системе здесь будет API запрос для верификации продукта
+      // Имитируем успешную верификацию продукта
+      // TODO: Заменить на реальный API вызов
+      await Future.delayed(const Duration(milliseconds: 300)); // Имитация задержки сети
+      
+      // Обновляем статус продукта в заказе
+      // Здесь должно быть обновление в БД/API
+      
       setState(() {
+        // Отмечаем продукт как верифицированный
+        _unverifiedProducts.removeAt(_currentProductIndex);
+        
+        // Если все продукты верифицированы
+        if (_unverifiedProducts.isEmpty) {
+          _successMessage = 'Все продукты верифицированы! Заказ готов к сборке.';
+          _currentProductIndex = -1;
+        } else {
+          // Переходим к следующему продукту или возвращаемся к началу списка
+          _currentProductIndex = _currentProductIndex % _unverifiedProducts.length;
+          _successMessage = 'Продукт "${currentProduct.name}" верифицирован. Отсканируйте следующий продукт.';
+        }
+        
         _isLoading = false;
-        _successMessage = 'Товар "${result['name'] ?? 'Неизвестно'}" добавлен в заказ';
         _barcodeController.clear();
         _lastScannedBarcode = null;
       });
+      
+      // Показываем сообщение об успешном сканировании
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_successMessage!),
+          duration: const Duration(seconds: 2),
+          backgroundColor: Colors.green,
+        ),
+      );
+      
+      // Если все продукты верифицированы, предлагаем перейти к сборке заказа
+      if (_unverifiedProducts.isEmpty) {
+        _showCompletionDialog();
+      }
+      
     } catch (e) {
       setState(() {
         _isLoading = false;
         _errorMessage = 'Ошибка при сканировании: ${e.toString()}';
+        _barcodeController.clear();
+        _lastScannedBarcode = null;
       });
+      
+      // Показываем сообщение об ошибке
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_errorMessage!),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
   
-  /// Выбор заказа
-  Future<void> _selectOrder() async {
-    final selectedOrderId = await showDialog<String>(
+  /// Показывает диалог завершения верификации
+  void _showCompletionDialog() {
+    showDialog(
       context: context,
-      builder: (context) => const SelectOrderDialog(),
+      builder: (context) => AlertDialog(
+        title: const Text('Верификация завершена'),
+        content: const Text('Все продукты успешно верифицированы. Перейти к сборке заказа?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Продолжить сканирование'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _goToOrderAssembly();
+            },
+            child: const Text('Перейти к сборке'),
+          ),
+        ],
+      ),
     );
+  }
+  
+  /// Переход к сборке заказа
+  void _goToOrderAssembly() {
+    if (_currentOrder == null) return;
     
-    if (selectedOrderId != null) {
-      setState(() {
-        _currentOrderId = selectedOrderId;
-      });
+    Navigator.of(context).pop(); // Закрываем экран сканера
+    
+    // Переходим к экрану сборки заказа
+    context.push('/orders/packing/${_currentOrder!.id}?supplyId=${widget.supplyId}').then((_) {
+      if (widget.onScanComplete != null) {
+        widget.onScanComplete!();
+      }
+    });
+  }
+  
+  /// Выбор другого заказа из поставки
+  void _selectOrder(Order order) {
+    setState(() {
+      _currentOrder = order;
+      _currentOrderId = order.id;
+      
+      // Создаем список продуктов для верификации
+      _unverifiedProducts = order.item.products
+          .where((p) => !p.isVerified)
+          .toList();
+      
+      _currentProductIndex = _unverifiedProducts.isEmpty ? -1 : 0;
+      _successMessage = null;
+      _errorMessage = null;
+      _barcodeController.clear();
+      _lastScannedBarcode = null;
+    });
+  }
+  
+  /// Завершение сканирования и возврат к предыдущему экрану
+  void _finishScanning() {
+    Navigator.of(context).pop();
+    if (widget.onScanComplete != null) {
+      widget.onScanComplete!();
     }
   }
   
   @override
   Widget build(BuildContext context) {
+    final bool hasUnverifiedProducts = _unverifiedProducts.isNotEmpty && _currentProductIndex >= 0;
+    
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Сканер штрих-кодов'),
+        title: Text(
+          _isInOrderContext 
+              ? 'Верификация продуктов - Заказ ${_currentOrder?.wbOrderNumber ?? ""}' 
+              : 'Сканер верификации'
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.check),
+            onPressed: _finishScanning,
+            tooltip: 'Завершить и вернуться',
+          ),
+        ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+      body: _isLoading
+          ? const Center(child: LoadingIndicator())
+          : Column(
+              children: [
+                // Область сканера - 50% экрана
+                Expanded(
+                  flex: 5,
+                  child: _buildScannerArea(),
+                ),
+                
+                // Разделитель
+                const Divider(height: 1),
+                
+                // Область информации о текущем продукте - 50% экрана
+                Expanded(
+                  flex: 5,
+                  child: _buildProductInfo(),
+                ),
+              ],
+            ),
+    );
+  }
+  
+  /// Построение области сканера
+  Widget _buildScannerArea() {
+    return Container(
+      color: Colors.black,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Камера сканера
+          MobileScanner(
+            controller: _scannerController,
+            onDetect: _onBarcodeDetect,
+          ),
+          
+          // Рамка для прицеливания
+          Center(
+            child: Container(
+              width: 250,
+              height: 250,
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: Colors.white,
+                  width: 2.0,
+                ),
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          
+          // Кнопки управления сканером внизу экрана
+          Positioned(
+            bottom: 20,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                // Переключение вспышки
+                IconButton(
+                  icon: Icon(
+                    _scannerController.torchEnabled 
+                        ? Icons.flash_on 
+                        : Icons.flash_off,
+                    color: Colors.white,
+                  ),
+                  onPressed: () => _scannerController.toggleTorch(),
+                ),
+                
+                // Переключение фронтальной камеры
+                IconButton(
+                  icon: const Icon(
+                    Icons.flip_camera_ios,
+                    color: Colors.white,
+                  ),
+                  onPressed: () => _scannerController.switchCamera(),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  /// Построение области информации о продукте
+  Widget _buildProductInfo() {
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Карточка выбора заказа
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Заказ', style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            _currentOrderId != null
-                                ? 'Заказ: $_currentOrderId'
-                                : 'Заказ не выбран',
-                          ),
-                        ),
-                        ElevatedButton(
-                          onPressed: _selectOrder,
-                          child: const Text('Выбрать'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+            // Заголовок
+            Text(
+              _isInOrderContext
+                  ? 'Верификация продуктов заказа'
+                  : 'Верификация продуктов поставки',
+              style: Theme.of(context).textTheme.titleLarge,
             ),
+            const SizedBox(height: 8),
             
-            const SizedBox(height: 16),
+            // Информация о заказе
+            if (_currentOrder != null) ...[
+              Text(
+                'Заказ №${_currentOrder!.wbOrderNumber}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              Text('Клиент: ${_currentOrder!.customer}'),
+              const Divider(),
+            ],
             
-            // Карточка сканирования
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Сканирование', style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
-                    
-                    if (_isScanning)
-                      SizedBox(
-                        height: 300,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: MobileScanner(
-                            controller: _scannerController,
-                            onDetect: _onBarcodeDetect,
-                            // Используем встроенные свойства для настройки внешнего вида
-                            scanWindow: Rect.fromCenter(
-                              center: const Offset(0, 0),
-                              width: 300,
-                              height: 300,
-                            ),
-                            overlayBuilder: (p0, p1) {
-                              return Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.black54,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: Colors.blue,
-                                    width: 3,
-                                  ),
+            // Если нет продуктов для верификации
+            if (_unverifiedProducts.isEmpty)
+              const Card(
+                color: Colors.green,
+                child: Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    'Все продукты верифицированы',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else if (_currentProductIndex >= 0 && _currentProductIndex < _unverifiedProducts.length) ...[
+              // Информация о текущем продукте
+              const Text(
+                'Отсканируйте:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              
+              Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: _unverifiedProducts[_currentProductIndex].imageUrl != null
+                            ? Image.network(
+                                _unverifiedProducts[_currentProductIndex].imageUrl!,
+                                height: 100,
+                                width: 100,
+                                fit: BoxFit.contain,
+                                errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.image_not_supported, 
+                                  size: 80,
+                                  color: Colors.grey,
                                 ),
-                              );
-                            },
-                          ),
+                              )
+                            : const Icon(
+                                Icons.image_not_supported, 
+                                size: 80,
+                                color: Colors.grey,
+                              ),
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      Text(
+                        _unverifiedProducts[_currentProductIndex].name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
                         ),
                       ),
-                    
-                    const SizedBox(height: 8),
-                    
-                    TextField(
+                      const SizedBox(height: 8),
+                      
+                      Row(
+                        children: [
+                          const Text(
+                            'Артикул: ',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(_unverifiedProducts[_currentProductIndex].article),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      
+                      Row(
+                        children: [
+                          const Text(
+                            'Штрихкод: ',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(_unverifiedProducts[_currentProductIndex].barcode),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      
+                      Row(
+                        children: [
+                          const Text(
+                            'Количество: ',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text('${_unverifiedProducts[_currentProductIndex].quantity} шт.'),
+                        ],
+                      ),
+                      
+                    ],
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 12),
+              
+              // Строка прогресса
+              Text(
+                'Прогресс верификации: ${_currentOrder!.item.verifiedProductCount}/${_currentOrder!.item.productCount}',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 4),
+              LinearProgressIndicator(
+                value: _currentOrder!.verificationProgress,
+                backgroundColor: Colors.grey[200],
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              
+              const SizedBox(height: 16),
+              
+              // Ручной ввод штрихкода
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
                       controller: _barcodeController,
                       decoration: const InputDecoration(
-                        labelText: 'Штрих-код',
+                        labelText: 'Введите штрихкод вручную',
                         border: OutlineInputBorder(),
                       ),
                       keyboardType: TextInputType.text,
+                      onSubmitted: (_) => _submitBarcode(),
                     ),
-                    
-                    const SizedBox(height: 8),
-                    
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: _toggleScanner,
-                            icon: Icon(_isScanning ? Icons.close : Icons.qr_code_scanner),
-                            label: Text(_isScanning ? 'Закрыть сканер' : 'Сканировать'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: _isLoading ? null : _submitBarcode,
-                            child: _isLoading
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Text('Отправить'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _submitBarcode,
+                    child: const Text('ОК'),
+                  ),
+                ],
               ),
-            ),
+            ],
             
-            // Сообщения
-            if (_successMessage != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: Card(
-                  color: Colors.green.shade100,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Text(_successMessage!),
-                  ),
-                ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                _errorMessage!,
+                style: const TextStyle(color: Colors.red),
+                textAlign: TextAlign.center,
               ),
-              
-            if (_errorMessage != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: Card(
-                  color: Colors.red.shade100,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Text(_errorMessage!),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Диалог выбора заказа
-class SelectOrderDialog extends StatefulWidget {
-  const SelectOrderDialog({super.key});
-
-  @override
-  State<SelectOrderDialog> createState() => _SelectOrderDialogState();
-}
-
-class _SelectOrderDialogState extends State<SelectOrderDialog> {
-  final _apiService = ApiService();
-  bool _isLoading = true;
-  String? _errorMessage;
-  List<dynamic> _orders = [];
-  
-  @override
-  void initState() {
-    super.initState();
-    _loadOrders();
-  }
-  
-  Future<void> _loadOrders() async {
-    try {
-      final orders = await _apiService.getOrders();
-      setState(() {
-        _orders = orders;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'Не удалось загрузить заказы: ${e.toString()}';
-      });
-    }
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Выберите заказ', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 16),
+            ],
             
-            if (_isLoading)
-              const Center(child: CircularProgressIndicator())
-            else if (_errorMessage != null)
-              Text(_errorMessage!, style: TextStyle(color: Colors.red.shade700))
-            else if (_orders.isEmpty)
-              const Text('Нет доступных заказов')
-            else
-              Flexible(
-                child: SizedBox(
-                  width: double.maxFinite,
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: _orders.length,
-                    itemBuilder: (context, index) {
-                      final order = _orders[index];
-                      return ListTile(
-                        title: Text('Заказ ${order['id']}'),
-                        subtitle: Text('Статус: ${order['status']}'),
-                        onTap: () {
-                          Navigator.of(context).pop(order['id'].toString());
-                        },
-                      );
-                    },
-                  ),
-                ),
+            if (_successMessage != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                _successMessage!,
+                style: const TextStyle(color: Colors.green),
+                textAlign: TextAlign.center,
               ),
+            ],
+            
+            // Если в контексте поставки, показываем кнопку выбора заказа
+            if (_isInSupplyContext && _supplyOrders != null && _supplyOrders!.length > 1) ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 8),
               
-            const SizedBox(height: 16),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Отмена'),
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Выберите заказ',
+                  border: OutlineInputBorder(),
+                ),
+                value: _currentOrderId,
+                items: _supplyOrders!.map((order) {
+                  return DropdownMenuItem<String>(
+                    value: order.id,
+                    child: Text('${order.wbOrderNumber} - ${order.customer}'),
+                  );
+                }).toList(),
+                onChanged: (orderId) {
+                  if (orderId != null) {
+                    final order = _supplyOrders!.firstWhere((o) => o.id == orderId);
+                    _selectOrder(order);
+                  }
+                },
               ),
-            ),
+            ],
           ],
         ),
       ),

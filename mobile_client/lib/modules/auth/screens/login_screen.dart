@@ -45,13 +45,13 @@ class _LoginScreenState extends State<LoginScreen> {
     
     await Future.delayed(const Duration(milliseconds: 500));
     
-    // Если пользователь уже авторизован, переходим сразу к заказам
+    // Если пользователь уже авторизован, переходим сразу к смене
     final token = _storageService.getToken();
     if (token != null) {
       if (!mounted) return;
       
       _apiService.setAuthToken(token);
-      context.go('/orders');
+      context.go('/shift');
     }
   }
   
@@ -82,7 +82,7 @@ class _LoginScreenState extends State<LoginScreen> {
       await _storageService.saveUserData(response['user'] as Map<String, dynamic>);
       
       if (!mounted) return;
-      context.go('/orders');
+      context.go('/shift');
     } catch (e) {
       setState(() {
         _errorMessage = 'Ошибка авторизации. Проверьте логин и пароль.';

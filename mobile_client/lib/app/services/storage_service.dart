@@ -86,7 +86,16 @@ class StorageService {
   /// Получение данных пользователя
   Map<String, dynamic>? getUserData() {
     _checkInitialized();
-    return _authBox.get(_userKey) as Map<String, dynamic>?;
+    
+    final data = _authBox.get(_userKey);
+    if (data == null) return null;
+    
+    // Преобразование из _Map<dynamic, dynamic> в Map<String, dynamic>
+    if (data is Map) {
+      return Map<String, dynamic>.from(data);
+    }
+    
+    return null;
   }
   
   /// Сохранение URL API
@@ -146,5 +155,23 @@ class StorageService {
     
     // Очистка SharedPreferences
     await _prefs.remove(_tokenKey);
+  }
+  
+  /// Получение строкового значения из SharedPreferences
+  String? getString(String key) {
+    _checkInitialized();
+    return _prefs.getString(key);
+  }
+  
+  /// Сохранение строкового значения в SharedPreferences
+  Future<bool> setString(String key, String value) async {
+    _checkInitialized();
+    return await _prefs.setString(key, value);
+  }
+  
+  /// Удаление значения из SharedPreferences
+  Future<bool> remove(String key) async {
+    _checkInitialized();
+    return await _prefs.remove(key);
   }
 } 
