@@ -1,24 +1,65 @@
 import { BaseModel } from './base.model.js';
+import { executeQuery } from '../utils/db';
+import logger from '../utils/logger';
 
 export class EnterpriseModel extends BaseModel {
   // Получение списка всех предприятий
   static async getAll() {
-    const sql = `
-      SELECT * FROM Enterprises
-      ORDER BY EnterpriseId
-    `;
-    const result = await this.query(sql);
-    return result.rows;
+    try {
+      const query = `
+        SELECT 
+          ID, 
+          Name, 
+          Description, 
+          Address, 
+          ContactPerson, 
+          ContactPhone, 
+          ContactEmail,
+          ApiKey
+        FROM Enterprises
+        ORDER BY Name
+      `;
+      
+      const results = await executeQuery(query);
+      return results;
+    } catch (error) {
+      logger.error('Ошибка получения списка предприятий', {
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   // Получение предприятия по ID
-  static async getById(enterpriseId) {
-    const sql = `
-      SELECT * FROM Enterprises
-      WHERE EnterpriseId = $1
-    `;
-    const result = await this.query(sql, [enterpriseId]);
-    return result.rows.length ? result.rows[0] : null;
+  static async getById(id) {
+    try {
+      const query = `
+        SELECT 
+          ID, 
+          Name, 
+          Description, 
+          Address, 
+          ContactPerson, 
+          ContactPhone, 
+          ContactEmail,
+          ApiKey
+        FROM Enterprises
+        WHERE ID = ?
+      `;
+      
+      const results = await executeQuery(query, [id]);
+      
+      if (!results.length) {
+        return null;
+      }
+      
+      return results[0];
+    } catch (error) {
+      logger.error(`Ошибка получения предприятия с ID=${id}`, {
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   // Получение предприятия по API ключу
@@ -32,79 +73,100 @@ export class EnterpriseModel extends BaseModel {
   }
 
   // Создание нового предприятия
-  static async create(enterprise) {
-    const sql = `
-      INSERT INTO Enterprises (
-        EnterpriseName, ApiKey, IsActive, 
-        SubscriptionType, SubscriptionExpiresAt
-      ) VALUES (
-        $1, $2, $3, $4, $5
-      ) RETURNING *
-    `;
-    const result = await this.query(sql, [
-      enterprise.enterpriseName,
-      enterprise.apiKey,
-      enterprise.isActive ?? true,
-      enterprise.subscriptionType ?? 'Базовая',
-      enterprise.subscriptionExpiresAt
-    ]);
-    return result.rows[0];
+  static async create(data) {
+    try {
+      const query = `
+        INSERT INTO Enterprises (
+          Name, 
+          Description, 
+          Address, 
+          ContactPerson, 
+          ContactPhone, 
+          ContactEmail,
+          ApiKey
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+      
+      const params = [
+        data.Name,
+        data.Description,
+        data.Address,
+        data.ContactPerson,
+        data.ContactPhone,
+        data.ContactEmail,
+        data.ApiKey
+      ];
+      
+      const result = await executeQuery(query, params);
+      
+      if (result.insertId) {
+        // Получаем созданное предприятие
+        return this.getById(result.insertId);
+      }
+      
+      throw new Error('Не удалось получить ID созданного предприятия');
+    } catch (error) {
+      logger.error('Ошибка создания предприятия', {
+        error: error.message,
+        data,
+      });
+      throw error;
+    }
   }
 
   // Обновление предприятия
-  static async update(enterpriseId, enterprise) {
-    const fields = [];
-    const values = [];
-    let paramIndex = 1;
-
-    // Добавляем в запрос только те поля, которые переданы для обновления
-    if (enterprise.enterpriseName !== undefined) {
-      fields.push(`EnterpriseName = $${paramIndex++}`);
-      values.push(enterprise.enterpriseName);
+  static async update(id, data) {
+    try {
+      const query = `
+        UPDATE Enterprises
+        SET 
+          Name = ?, 
+          Description = ?, 
+          Address = ?, 
+          ContactPerson = ?, 
+          ContactPhone = ?, 
+          ContactEmail = ?,
+          ApiKey = ?
+        WHERE ID = ?
+      `;
+      
+      const params = [
+        data.Name,
+        data.Description,
+        data.Address,
+        data.ContactPerson,
+        data.ContactPhone,
+        data.ContactEmail,
+        data.ApiKey,
+        id
+      ];
+      
+      await executeQuery(query, params);
+      
+      // Получаем обновленное предприятие
+      return this.getById(id);
+    } catch (error) {
+      logger.error(`Ошибка обновления предприятия с ID=${id}`, {
+        error: error.message,
+        data,
+      });
+      throw error;
     }
-    if (enterprise.apiKey !== undefined) {
-      fields.push(`ApiKey = $${paramIndex++}`);
-      values.push(enterprise.apiKey);
-    }
-    if (enterprise.isActive !== undefined) {
-      fields.push(`IsActive = $${paramIndex++}`);
-      values.push(enterprise.isActive);
-    }
-    if (enterprise.subscriptionType !== undefined) {
-      fields.push(`SubscriptionType = $${paramIndex++}`);
-      values.push(enterprise.subscriptionType);
-    }
-    if (enterprise.subscriptionExpiresAt !== undefined) {
-      fields.push(`SubscriptionExpiresAt = $${paramIndex++}`);
-      values.push(enterprise.subscriptionExpiresAt);
-    }
-
-    // Если нет полей для обновления, возвращаем текущее предприятие
-    if (fields.length === 0) {
-      return this.getById(enterpriseId);
-    }
-
-    const sql = `
-      UPDATE Enterprises
-      SET ${fields.join(', ')}
-      WHERE EnterpriseId = $${paramIndex}
-      RETURNING *
-    `;
-    values.push(enterpriseId);
-
-    const result = await this.query(sql, values);
-    return result.rows.length ? result.rows[0] : null;
   }
 
   // Удаление предприятия (логическое)
-  static async delete(enterpriseId) {
-    const sql = `
-      UPDATE Enterprises
-      SET IsActive = FALSE
-      WHERE EnterpriseId = $1
-    `;
-    const result = await this.query(sql, [enterpriseId]);
-    return result.rowCount > 0;
+  static async delete(id) {
+    try {
+      const query = 'DELETE FROM Enterprises WHERE ID = ?';
+      const result = await executeQuery(query, [id]);
+      
+      return result.affectedRows > 0;
+    } catch (error) {
+      logger.error(`Ошибка удаления предприятия с ID=${id}`, {
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   // Создание API ключа

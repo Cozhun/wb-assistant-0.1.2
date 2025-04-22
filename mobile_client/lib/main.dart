@@ -1,18 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:mobile_client/app/routes/app_router.dart';
-import 'package:mobile_client/app/services/api_service.dart';
 import 'package:mobile_client/app/services/storage_service.dart';
 import 'package:mobile_client/ui/common/theme/app_theme.dart';
 import 'package:mobile_client/ui/common/theme/theme_provider.dart';
 import 'package:provider/provider.dart';
-import 'dart:io' show Platform;
-import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:mobile_client/app/services/notification_service.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 // Глобальный экземпляр маршрутизатора

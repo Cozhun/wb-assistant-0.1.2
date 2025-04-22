@@ -21,4 +21,7 @@ router.put('/:id', enterpriseController.updateEnterprise);
 // Удаление предприятия
 router.delete('/:id', enterpriseController.deleteEnterprise);
 
+// Генерация API ключа для предприятия
+router.post('/:id/generate-api-key', enterpriseController.generateApiKey);
+
 export default router; 

@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
+import 'package:mobile_client/app/constants/app_config.dart';
 
 /// Сервис для работы с API
 class ApiService {
@@ -16,20 +17,23 @@ class ApiService {
     if (_isLocalTesting) {
       if (_isEmulator && Platform.isAndroid && !kIsWeb) {
         // Для эмулятора Android используем специальный IP
-        return 'http://10.0.2.2';
+        return AppConfig.emulatorApiUrl;
       } else {
         // Для физических устройств используем IP компьютера в локальной сети
-        return 'http://192.168.1.72';
+        return AppConfig.localApiUrl;
       }
     } else {
       // URL для продакшн окружения
-      return 'https://api.yourdomain.com';
+      return AppConfig.productionApiUrl;
     }
   }
 
+  // Использовать статический getter для получения Dio клиента
+  Dio get client => _dio;
   
   static const int _connectionTimeout = 15000; // 15 seconds
   static const int _receiveTimeout = 10000; // 10 seconds
+  static const int _maxRetries = 3; // Максимальное количество повторных попыток
 
   
   final Dio _dio = Dio(BaseOptions(
@@ -44,6 +48,8 @@ class ApiService {
   
   final bool _isDebugMode = kDebugMode;
   String? _authToken;
+  String? _refreshToken;
+  int _retryCount = 0;
   
   ApiService() {
     // Инициализируем интерцепторы для логирования и обработки ошибок
@@ -57,15 +63,42 @@ class ApiService {
   }
   
   /// Устанавливает токен авторизации для запросов
-  void setAuthToken(String token) {
+  void setAuthToken(String token, {String? refreshToken}) {
     _authToken = token;
+    _refreshToken = refreshToken;
     _dio.options.headers['Authorization'] = 'Bearer $token';
   }
   
   /// Сбрасывает токен авторизации
   void clearAuthToken() {
     _authToken = null;
+    _refreshToken = null;
     _dio.options.headers.remove('Authorization');
+  }
+  
+  /// Обновление токена авторизации
+  Future<bool> _refreshAuthToken() async {
+    try {
+      final response = await _dio.post(
+        '/auth/refresh',
+        data: {'refreshToken': _refreshToken},
+        options: Options(headers: {'Authorization': null}),
+      );
+      
+      if (response.statusCode == 200 && response.data['token'] != null) {
+        setAuthToken(
+          response.data['token'],
+          refreshToken: response.data['refreshToken'] ?? _refreshToken
+        );
+        return true;
+      }
+      return false;
+    } catch (e) {
+      if (_isDebugMode) {
+        print('Ошибка обновления токена: $e');
+      }
+      return false;
+    }
   }
   
   /// Авторизация пользователя с механизмом повторных попыток
@@ -263,7 +296,6 @@ class ApiService {
         onRequest: (options, handler) {
           if (_isDebugMode) {
             print('REQUEST[${options.method}] => PATH: ${options.path}');
-            print('REQUEST URL: ${options.baseUrl}${options.path}');
           }
           return handler.next(options);
         },
@@ -273,12 +305,37 @@ class ApiService {
           }
           return handler.next(response);
         },
-        onError: (DioException e, handler) {
+        onError: (DioException e, handler) async {
           if (_isDebugMode) {
             print('ERROR[${e.response?.statusCode}] => PATH: ${e.requestOptions.path}');
-            print('ERROR TYPE: ${e.type}');
-            print('ERROR MESSAGE: ${e.message}');
           }
+
+          // Если ошибка 401 и у нас есть refresh token, пробуем обновить токен
+          if (e.response?.statusCode == 401 && _refreshToken != null && _retryCount < _maxRetries) {
+            _retryCount++;
+            try {
+              await _refreshAuthToken();
+              // Повторяем запрос с новым токеном
+              final opts = Options(
+                method: e.requestOptions.method,
+                headers: e.requestOptions.headers,
+              );
+              final res = await _dio.request(
+                e.requestOptions.path,
+                options: opts,
+                data: e.requestOptions.data,
+                queryParameters: e.requestOptions.queryParameters,
+              );
+              _retryCount = 0;
+              return handler.resolve(res);
+            } catch (refreshError) {
+              // Если не удалось обновить токен, сбрасываем токены
+              _authToken = null;
+              _refreshToken = null;
+              return handler.next(e);
+            }
+          }
+          
           return handler.next(e);
         },
       ),
@@ -310,9 +367,6 @@ class ApiService {
       }
     }
   }
-  
-  /// Получает доступ к объекту Dio для прямых запросов
-  Dio get client => _dio;
   
   /// Общий метод GET для запросов API
   Future<dynamic> get(String path, {Map<String, dynamic>? queryParameters, Options? options}) async {

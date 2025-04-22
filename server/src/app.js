@@ -1,98 +1,82 @@
 /**
- * Главный файл приложения
+ * Основной файл приложения
  */
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
 import morgan from 'morgan';
-import { fileURLToPath } from 'url';
+import helmet from 'helmet';
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+import YAML from 'yamljs';
 import path from 'path';
-import fs from 'fs';
-import dotenv from 'dotenv';
-import routes from './routes/index.js';
+import { fileURLToPath } from 'url';
 import logger from './utils/logger.js';
-import db from './db/index.js';
-import redis from './utils/redis.js';
+import routes from './routes/index.js';
+import config from './config/config.js';
+import wbSyncService from './services/wb-sync.service.js';
 
-// Загрузка переменных окружения
-dotenv.config();
-
-// Определение __dirname для ES modules
+// Инициализация ESM __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Создание директории для логов, если она не существует
-const logDir = path.join(__dirname, '../logs');
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
-}
-
-// Создание экземпляра Express
+// Конфигурация приложения
 const app = express();
 
-// Настройка логирования запросов
-const accessLogStream = fs.createWriteStream(
-  path.join(logDir, 'access.log'),
-  { flags: 'a' }
-);
-
-// Настройка CORS
-const corsOptions = {
-  origin: process.env.CORS_ORIGIN || '*',
-  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-};
-
-// Настройка middleware
-app.use(helmet()); // Безопасность
-app.use(cors(corsOptions)); // CORS с настройками
+// Настройка middlewares
+app.use(helmet()); // Безопасные HTTP заголовки
+app.use(compression()); // Сжатие ответов
 app.use(express.json()); // Парсинг JSON
 app.use(express.urlencoded({ extended: true })); // Парсинг URL-encoded данных
-app.use(morgan('combined', { stream: accessLogStream })); // Логирование запросов
 
-// Специальный обработчик для проверки здоровья
-app.get('/healthcheck', (req, res) => {
-  res.status(200).send('OK');
+// Конфигурация CORS
+const corsOptions = {
+  origin: config.corsOrigins || '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+app.use(cors(corsOptions));
+
+// Логирование запросов
+app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
+
+// Ограничение запросов
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 1000, // Лимит запросов на окно
+  standardHeaders: true, // Return rate limit info in headers
+  legacyHeaders: false // Don't use deprecated headers
 });
+app.use(limiter);
 
-// Подключение маршрутов
-app.use(routes);
+// Запуск сервиса синхронизации с Wildberries
+if (config.wildberries && config.wildberries.autoSync === true) {
+  wbSyncService.startAutomaticSync();
+  logger.info('Служба автоматической синхронизации с Wildberries запущена');
+}
 
-// Обработка ошибок 404
-app.use((req, res, next) => {
-  res.status(404).json({ error: 'Запрашиваемый ресурс не найден' });
-});
+// API документация (Swagger)
+const swaggerPath = path.resolve(__dirname, '../swagger/openapi.yaml');
+try {
+  const swaggerDocument = YAML.load(swaggerPath);
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+  logger.info('Swagger UI доступен по пути /api-docs');
+} catch (error) {
+  logger.warn('Не удалось загрузить документацию Swagger:', error);
+}
+
+// Маршруты API
+app.use('/api', routes);
 
 // Обработка ошибок
 app.use((err, req, res, next) => {
-  logger.error('Внутренняя ошибка сервера:', err);
-  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-});
-
-// Получение порта из переменных окружения или использование значения по умолчанию
-const PORT = process.env.PORT || 3000;
-
-// Инициализация Redis
-const initializeRedis = async () => {
-  try {
-    await redis.initRedis();
-    logger.info('Redis инициализирован успешно');
-  } catch (error) {
-    logger.error('Ошибка инициализации Redis:', error);
-  }
-};
-
-// Запуск сервера
-app.listen(PORT, async () => {
-  logger.info(`Сервер запущен на порту ${PORT}`);
-  logger.info(`Среда выполнения: ${process.env.NODE_ENV || 'development'}`);
-  
-  // Проверка подключения к БД
-  await db.checkDatabaseConnection();
-  
-  // Инициализация Redis
-  await initializeRedis();
+  logger.error('Ошибка приложения:', err);
+  res.status(err.status || 500).json({
+    error: {
+      message: err.message || 'Внутренняя ошибка сервера',
+      status: err.status || 500
+    }
+  });
 });
 
 export default app; 

@@ -3,6 +3,7 @@
  */
 import { OrderModel } from '../models/order.model.js';
 import logger from '../utils/logger.js';
+import wbSyncService from '../services/wb-sync.service.js';
 
 /**
  * Получить заказы по ID предприятия
@@ -83,6 +84,16 @@ export const getOrderById = async (req, res) => {
       return res.status(404).json({ error: 'Заказ не найден' });
     }
     
+    // Если это заказ Wildberries, запрашиваем актуальный статус из WB API
+    if (order.wbOrderNumber) {
+      try {
+        const wbDetails = await wbSyncService.getOrderDetails(order.wbOrderNumber);
+        order.wbDetails = wbDetails;
+      } catch (wbError) {
+        logger.warn(`Не удалось получить данные заказа из Wildberries #${order.wbOrderNumber}:`, wbError);
+      }
+    }
+    
     return res.json(order);
   } catch (error) {
     logger.error(`Ошибка при получении заказа с ID ${req.params.id}:`, error);
@@ -107,6 +118,16 @@ export const getOrderByNumber = async (req, res) => {
       return res.status(404).json({ error: 'Заказ не найден' });
     }
     
+    // Если это заказ Wildberries, запрашиваем актуальный статус из WB API
+    if (order.wbOrderNumber) {
+      try {
+        const wbDetails = await wbSyncService.getOrderDetails(order.wbOrderNumber);
+        order.wbDetails = wbDetails;
+      } catch (wbError) {
+        logger.warn(`Не удалось получить данные заказа из Wildberries #${order.wbOrderNumber}:`, wbError);
+      }
+    }
+    
     return res.json(order);
   } catch (error) {
     logger.error('Ошибка при получении заказа по номеру:', error);
@@ -122,6 +143,7 @@ export const createOrder = async (req, res) => {
     const {
       enterpriseId,
       orderNumber,
+      wbOrderNumber,
       sourceId,
       customerId,
       customerName,
@@ -170,6 +192,7 @@ export const createOrder = async (req, res) => {
     const newOrder = await OrderModel.createOrder({
       enterpriseId,
       orderNumber,
+      wbOrderNumber,
       sourceId,
       customerId,
       customerName,
@@ -184,6 +207,16 @@ export const createOrder = async (req, res) => {
       items,
       notes
     });
+    
+    // Если это заказ Wildberries, синхронизируем статус с WB API
+    if (wbOrderNumber) {
+      try {
+        // Обновляем статус в Wildberries
+        await wbSyncService.updateOrderStatus(wbOrderNumber, 'new');
+      } catch (wbError) {
+        logger.warn(`Не удалось обновить статус заказа в Wildberries #${wbOrderNumber}:`, wbError);
+      }
+    }
     
     return res.status(201).json(newOrder);
   } catch (error) {
@@ -232,6 +265,23 @@ export const updateOrder = async (req, res) => {
       notes
     });
     
+    // Если это заказ Wildberries и изменился статус, синхронизируем с WB API
+    if (
+      existingOrder.wbOrderNumber && 
+      statusId && 
+      existingOrder.statusId !== statusId
+    ) {
+      try {
+        // Получаем название статуса по ID
+        const statusName = await OrderModel.getStatusNameById(statusId);
+        
+        // Обновляем статус в Wildberries
+        await wbSyncService.updateOrderStatus(existingOrder.wbOrderNumber, statusName);
+      } catch (wbError) {
+        logger.warn(`Не удалось обновить статус заказа в Wildberries #${existingOrder.wbOrderNumber}:`, wbError);
+      }
+    }
+    
     return res.json(updatedOrder);
   } catch (error) {
     logger.error(`Ошибка при обновлении заказа с ID ${req.params.id}:`, error);
@@ -258,6 +308,20 @@ export const updateOrderStatus = async (req, res) => {
     }
     
     const updatedOrder = await OrderModel.updateOrderStatus(id, statusId, comment);
+    
+    // Если это заказ Wildberries, синхронизируем статус с WB API
+    if (existingOrder.wbOrderNumber) {
+      try {
+        // Получаем название статуса по ID
+        const statusName = await OrderModel.getStatusNameById(statusId);
+        
+        // Обновляем статус в Wildberries
+        await wbSyncService.updateOrderStatus(existingOrder.wbOrderNumber, statusName);
+      } catch (wbError) {
+        logger.warn(`Не удалось обновить статус заказа в Wildberries #${existingOrder.wbOrderNumber}:`, wbError);
+      }
+    }
+    
     return res.json(updatedOrder);
   } catch (error) {
     logger.error(`Ошибка при обновлении статуса заказа с ID ${req.params.id}:`, error);
@@ -337,144 +401,60 @@ export const addOrderItem = async (req, res) => {
  */
 export const updateOrderItem = async (req, res) => {
   try {
-    const { id, itemId } = req.params;
-    const { quantity, price, discount } = req.body;
+    const { orderId, itemId } = req.params;
+    const { quantity, collectedQuantity } = req.body;
     
-    if (!id || !itemId) {
-      return res.status(400).json({ error: 'ID заказа и ID элемента обязательны' });
-    }
-    
-    if (quantity !== undefined && quantity <= 0) {
-      return res.status(400).json({ error: 'Количество должно быть положительным' });
+    if (!orderId || !itemId) {
+      return res.status(400).json({ error: 'ID заказа и ID позиции обязательны' });
     }
     
     // Проверка существования заказа
-    const existingOrder = await OrderModel.getOrderById(id);
+    const existingOrder = await OrderModel.getOrderById(orderId);
     if (!existingOrder) {
       return res.status(404).json({ error: 'Заказ не найден' });
     }
     
-    // Проверка существования элемента
-    const existingItem = await OrderModel.getOrderItemById(itemId);
-    if (!existingItem || existingItem.orderId !== Number(id)) {
-      return res.status(404).json({ error: 'Элемент заказа не найден' });
-    }
-    
-    const updatedItem = await OrderModel.updateOrderItem(itemId, {
+    const updatedOrder = await OrderModel.updateOrderItem(orderId, itemId, {
       quantity,
-      price,
-      discount
+      collectedQuantity
     });
     
-    return res.json(updatedItem);
-  } catch (error) {
-    logger.error(`Ошибка при обновлении элемента заказа:`, {
-      orderId: req.params.id,
-      itemId: req.params.itemId,
-      error: error.message
-    });
-    return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-};
-
-/**
- * Удалить элемент заказа
- */
-export const deleteOrderItem = async (req, res) => {
-  try {
-    const { id, itemId } = req.params;
-    
-    if (!id || !itemId) {
-      return res.status(400).json({ error: 'ID заказа и ID элемента обязательны' });
-    }
-    
-    // Проверка существования заказа
-    const existingOrder = await OrderModel.getOrderById(id);
-    if (!existingOrder) {
-      return res.status(404).json({ error: 'Заказ не найден' });
-    }
-    
-    // Проверка существования элемента
-    const existingItem = await OrderModel.getOrderItemById(itemId);
-    if (!existingItem || existingItem.orderId !== Number(id)) {
-      return res.status(404).json({ error: 'Элемент заказа не найден' });
-    }
-    
-    // Проверка, что у заказа останется хотя бы один элемент
-    const orderItems = await OrderModel.getOrderItems(id);
-    if (orderItems.length <= 1) {
-      return res.status(400).json({ 
-        error: 'Невозможно удалить последний элемент заказа' 
-      });
-    }
-    
-    await OrderModel.deleteOrderItem(itemId);
-    return res.status(204).send();
-  } catch (error) {
-    logger.error(`Ошибка при удалении элемента заказа:`, {
-      orderId: req.params.id,
-      itemId: req.params.itemId,
-      error: error.message
-    });
-    return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-};
-
-/**
- * Получить историю заказа
- */
-export const getOrderHistory = async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    if (!id) {
-      return res.status(400).json({ error: 'ID заказа обязателен' });
-    }
-    
-    // Проверка существования заказа
-    const existingOrder = await OrderModel.getOrderById(id);
-    if (!existingOrder) {
-      return res.status(404).json({ error: 'Заказ не найден' });
-    }
-    
-    const history = await OrderModel.getOrderHistory(id);
-    return res.json(history);
-  } catch (error) {
-    logger.error(`Ошибка при получении истории заказа с ID ${req.params.id}:`, error);
-    return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-};
-
-/**
- * Отменить заказ
- */
-export const cancelOrder = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-    
-    if (!id) {
-      return res.status(400).json({ error: 'ID заказа обязателен' });
-    }
-    
-    // Проверка существования заказа
-    const existingOrder = await OrderModel.getOrderById(id);
-    if (!existingOrder) {
-      return res.status(404).json({ error: 'Заказ не найден' });
-    }
-    
-    // Проверка возможности отмены заказа
-    const cancelableStatuses = await OrderModel.getCancelableStatuses();
-    if (!cancelableStatuses.includes(existingOrder.statusId)) {
-      return res.status(400).json({ 
-        error: 'Заказ в текущем статусе не может быть отменен' 
-      });
-    }
-    
-    const updatedOrder = await OrderModel.cancelOrder(id, reason);
     return res.json(updatedOrder);
   } catch (error) {
-    logger.error(`Ошибка при отмене заказа с ID ${req.params.id}:`, error);
+    logger.error(`Ошибка при обновлении позиции заказа с ID ${req.params.orderId}:`, error);
+    return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+};
+
+/**
+ * Обновить метку печати этикетки для заказа
+ */
+export const updateLabelPrintStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isLabelPrinted } = req.body;
+    
+    if (!id) {
+      return res.status(400).json({ error: 'ID заказа обязателен' });
+    }
+    
+    if (isLabelPrinted === undefined) {
+      return res.status(400).json({ error: 'Статус печати этикетки обязателен' });
+    }
+    
+    // Проверка существования заказа
+    const existingOrder = await OrderModel.getOrderById(id);
+    if (!existingOrder) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+    
+    const updatedOrder = await OrderModel.updateOrder(id, {
+      isLabelPrinted
+    });
+    
+    return res.json(updatedOrder);
+  } catch (error) {
+    logger.error(`Ошибка при обновлении статуса печати этикетки для заказа с ID ${req.params.id}:`, error);
     return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 };
@@ -501,6 +481,50 @@ export const getOrderSources = async (req, res) => {
     return res.json(sources);
   } catch (error) {
     logger.error('Ошибка при получении источников заказов:', error);
+    return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+};
+
+/**
+ * Пометить заказ как невозможный к сборке
+ */
+export const markOrderAsImpossible = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    if (!id) {
+      return res.status(400).json({ error: 'ID заказа обязателен' });
+    }
+    
+    if (!reason) {
+      return res.status(400).json({ error: 'Причина невозможности сборки обязательна' });
+    }
+    
+    // Проверка существования заказа
+    const existingOrder = await OrderModel.getOrderById(id);
+    if (!existingOrder) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+    
+    const updatedOrder = await OrderModel.updateOrder(id, {
+      impossibleToCollect: true,
+      impossibilityReason: reason,
+      impossibilityDate: new Date()
+    });
+    
+    // Если это заказ Wildberries, отменяем его в WB API
+    if (existingOrder.wbOrderNumber) {
+      try {
+        await wbSyncService.updateOrderStatus(existingOrder.wbOrderNumber, 'cancelled');
+      } catch (wbError) {
+        logger.warn(`Не удалось отменить заказ в Wildberries #${existingOrder.wbOrderNumber}:`, wbError);
+      }
+    }
+    
+    return res.json(updatedOrder);
+  } catch (error) {
+    logger.error(`Ошибка при пометке заказа как невозможного к сборке с ID ${req.params.id}:`, error);
     return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 }; 

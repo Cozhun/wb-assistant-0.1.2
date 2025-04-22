@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile_client/app/services/api_service.dart';
 import 'package:mobile_client/app/services/storage_service.dart';

@@ -1,202 +1,323 @@
 /**
- * Клиент для взаимодействия с Wildberries API через Python мост
+ * Клиент для взаимодействия с Wildberries API
  */
-import path from 'path';
-import { spawn } from 'child_process';
-import fs from 'fs';
+import axios from 'axios';
 import logger from '../utils/logger';
 import config from '../config';
-import { generateMockData } from './wb-mock';
+// import { generateMockData } from './wb-mock'; // Удаляем импорт моков
+import { EnterpriseModel } from '../models/enterprise.model.js';
 
-// Путь к Python-скрипту моста
-const BRIDGE_SCRIPT = path.join(__dirname, '../scripts/wb_api_bridge.py');
+// Базовый URL для API Wildberries
+const WB_API_BASE_URL = 'https://suppliers-api.wildberries.ru';
+// URL для статистики и аналитики
+const WB_STATISTICS_API_URL = 'https://statistics-api.wildberries.ru';
+// URL для работы с каталогом
+const WB_CATALOG_API_URL = 'https://catalog-api.wildberries.ru';
 
 class WildberriesApiClient {
   constructor() {
-    this.apiKey = config.WB_API_KEY || process.env.WB_API_KEY;
-    this.initialized = false;
-    this.mockMode = !this.apiKey;
-    
-    if (this.mockMode) {
-      logger.warn('WB API: Ключ API не найден, используется режим моков');
-    }
-    
-    // Проверяем наличие моста Python-JS
-    if (!fs.existsSync(BRIDGE_SCRIPT)) {
-      throw new Error(`Не найден скрипт моста API: ${BRIDGE_SCRIPT}`);
-    }
-    
     this.initialized = true;
+    // Удаляем mockMode
+    // this.mockMode = !process.env.DEMO_WB_API_KEY && !config.WB_API_KEY;
+    
+    // if (this.mockMode) {
+    //   logger.warn('WB API: Демо ключ API не найден, используется режим моков');
+    // }
+    // Добавим проверку наличия ключа при инициализации, если это требуется
+    if (!config.WB_API_KEY && !process.env.DEMO_WB_API_KEY) {
+      logger.warn('WB API: Не найден глобальный WB_API_KEY или DEMO_WB_API_KEY. Работа возможна только с ключами предприятий.');
+      // Можно выбросить ошибку, если глобальный ключ обязателен:
+      // throw new Error('Глобальный API ключ Wildberries (WB_API_KEY или DEMO_WB_API_KEY) не установлен');
+    }
   }
   
   /**
-   * Запуск Python-моста для вызова метода API
-   * @param {string} method - Имя метода API
-   * @param {Object} args - Аргументы метода
-   * @returns {Promise<any>} - Результат вызова API
+   * Получение API ключа для предприятия
+   * @param {string} enterpriseId - ID предприятия
+   * @returns {Promise<string|null>} - API ключ или null, если не найден
    */
-  async _callBridge(method, args = {}) {
-    // В режиме моков возвращаем тестовые данные
-    if (this.mockMode) {
-      return generateMockData(method, args);
-    }
-    
-    return new Promise((resolve, reject) => {
-      const pythonArgs = [
-        BRIDGE_SCRIPT,
-        '--method', method,
-        '--args', JSON.stringify(args)
-      ];
-      
-      // Добавляем API ключ, если он доступен
-      if (this.apiKey) {
-        pythonArgs.push('--api-key', this.apiKey);
-      }
-      
-      // Добавляем режим отладки, если нужно
-      if (config.DEBUG) {
-        pythonArgs.push('--debug');
-      }
-      
-      logger.debug(`WB API: Вызов метода ${method}`, { args });
-      
-      const pythonProcess = spawn('python', pythonArgs);
-      let outputData = '';
-      let errorData = '';
-      
-      pythonProcess.stdout.on('data', (data) => {
-        outputData += data.toString();
-      });
-      
-      pythonProcess.stderr.on('data', (data) => {
-        errorData += data.toString();
-      });
-      
-      pythonProcess.on('close', (code) => {
-        if (code !== 0) {
-          logger.error(`WB API: Ошибка выполнения метода ${method}`, { 
-            code,
-            error: errorData
-          });
-          
-          return reject(new Error(`Ошибка выполнения метода ${method}: ${errorData}`));
+  async getApiKey(enterpriseId) {
+    if (enterpriseId) {
+      try {
+        const enterprise = await EnterpriseModel.getById(enterpriseId);
+        if (enterprise && enterprise.ApiKey) {
+          return enterprise.ApiKey;
         }
-        
-        try {
-          const result = JSON.parse(outputData);
-          
-          // Проверяем наличие ошибки в ответе
-          if (result && result.error) {
-            logger.error(`WB API: Ошибка в ответе API для метода ${method}`, { 
-              error: result.error,
-              type: result.type
-            });
-            
-            return reject(new Error(result.error));
-          }
-          
-          resolve(result);
-        } catch (error) {
-          logger.error(`WB API: Ошибка парсинга JSON из ответа для метода ${method}`, { 
-            error: error.message,
-            output: outputData
-          });
-          
-          reject(new Error(`Ошибка парсинга ответа для метода ${method}: ${error.message}`));
-        }
-      });
-      
-      pythonProcess.on('error', (error) => {
-        logger.error(`WB API: Ошибка запуска Python процесса для метода ${method}`, { 
+        logger.warn(`WB API: Ключ API для предприятия ${enterpriseId} не найден`);
+      } catch (error) {
+        logger.error(`WB API: Ошибка получения ключа для предприятия ${enterpriseId}`, {
           error: error.message
         });
-        
-        reject(new Error(`Ошибка запуска процесса: ${error.message}`));
+      }
+    }
+    // Возвращаем глобальный ключ или null, если нет enterpriseId или его ключ не найден
+    return process.env.DEMO_WB_API_KEY || config.WB_API_KEY || null;
+  }
+  
+  /**
+   * Выполнение запроса к API Wildberries
+   * @param {string} method - HTTP метод (GET, POST, PUT, DELETE)
+   * @param {string} endpoint - Конечная точка API
+   * @param {Object} data - Данные запроса (для POST, PUT)
+   * @param {string} enterpriseId - ID предприятия (опционально)
+   * @param {string} baseUrl - Базовый URL API (опционально)
+   * @returns {Promise<any>} - Результат запроса
+   */
+  async _makeRequest(method, endpoint, data = null, enterpriseId = null, baseUrl = WB_API_BASE_URL) {
+    // Удаляем проверку mockMode
+    // if (this.mockMode) {
+    //   return generateMockData(endpoint, data);
+    // }
+    
+    try {
+      const apiKey = await this.getApiKey(enterpriseId);
+      
+      if (!apiKey) {
+        // Теперь выбрасываем ошибку, если ключ не найден (ни для предприятия, ни глобальный)
+        logger.error(`WB API: API ключ недоступен для запроса к ${endpoint}`, { enterpriseId });
+        throw new Error('API ключ недоступен для выполнения запроса');
+      }
+      
+      const url = `${baseUrl}${endpoint}`;
+      
+      logger.debug(`WB API: ${method} запрос к ${url}`, { 
+        enterpriseId,
+        data: data ? JSON.stringify(data).substring(0, 100) + '...' : null
       });
-    });
+      
+      const response = await axios({
+        method,
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': apiKey
+        },
+        data: method !== 'GET' ? data : undefined,
+        params: method === 'GET' ? data : undefined,
+        timeout: 30000 // 30 секунд таймаут
+      });
+      
+      return response.data;
+    } catch (error) {
+      // Улучшенная обработка ошибок
+      const errorDetails = { enterpriseId };
+      let errorMessage = `Ошибка API Wildberries: ${error.message}`;
+
+      if (error.response) {
+        errorDetails.status = error.response.status;
+        errorDetails.data = error.response.data;
+        errorMessage = `Ошибка API Wildberries (${error.response.status}): ${JSON.stringify(error.response.data)}`;
+        if (error.response.status === 401) {
+           errorMessage = 'Ошибка API Wildberries: Недействительный или просроченный токен авторизации (401).';
+           // Здесь можно добавить логику обновления токена, если применимо
+        } else if (error.response.status === 429) {
+          errorMessage = 'Ошибка API Wildberries: Превышен лимит запросов (429).';
+          // Здесь можно добавить логику повторного запроса с задержкой
+        }
+      } else if (error.request) {
+        errorMessage = 'Ошибка API Wildberries: Нет ответа от сервера.';
+        errorDetails.request = 'No response received';
+      } else {
+        errorDetails.message = error.message;
+      }
+
+      logger.error(`WB API: Ошибка при выполнении запроса ${endpoint}`, errorDetails);
+      throw new Error(errorMessage);
+    }
   }
   
   /**
    * Получение списка новых заказов
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Array>} Список новых заказов
    */
-  async getNewOrders() {
-    return this._callBridge('get_new_orders');
+  async getNewOrders(enterpriseId = null) {
+    return this._makeRequest('GET', '/api/v3/orders/new', null, enterpriseId);
   }
   
   /**
    * Получение статуса заказа
    * @param {string} orderId - ID заказа
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Object>} Статус заказа
    */
-  async getOrderStatus(orderId) {
-    return this._callBridge('get_order_status', { order_id: orderId });
+  async getOrderStatus(orderId, enterpriseId = null) {
+    return this._makeRequest('GET', `/api/v3/orders/${orderId}`, null, enterpriseId);
   }
   
   /**
    * Получение этикеток для заказов
    * @param {Array<string>} orderIds - Массив ID заказов
    * @param {string} format - Формат этикеток (pdf, png)
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Object>} - Данные этикеток
    */
-  async getStickers(orderIds, format = 'pdf') {
-    return this._callBridge('get_order_stickers', { 
+  async getStickers(orderIds, format = 'pdf', enterpriseId = null) {
+    return this._makeRequest('POST', '/api/v3/orders/stickers', { 
       order_ids: orderIds,
       file_format: format
-    });
+    }, enterpriseId);
   }
   
   /**
    * Создание новой поставки
    * @param {string} name - Название поставки (опционально)
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Object>} - Информация о созданной поставке
    */
-  async createSupply(name = '') {
-    return this._callBridge('create_supply', { name });
+  async createSupply(name = '', enterpriseId = null) {
+    return this._makeRequest('POST', '/api/v3/supplies', { name }, enterpriseId);
   }
   
   /**
    * Получение информации о поставке
    * @param {string} supplyId - ID поставки
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Object>} - Информация о поставке
    */
-  async getSupplyInfo(supplyId) {
-    return this._callBridge('get_supply_info', { supply_id: supplyId });
+  async getSupplyInfo(supplyId, enterpriseId = null) {
+    return this._makeRequest('GET', `/api/v3/supplies/${supplyId}`, null, enterpriseId);
   }
   
   /**
    * Добавление заказов в поставку
    * @param {string} supplyId - ID поставки
    * @param {Array<string>} orderIds - Массив ID заказов
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Object>} - Результат операции
    */
-  async addOrdersToSupply(supplyId, orderIds) {
-    return this._callBridge('add_supply_orders', { 
-      supply_id: supplyId,
-      order_ids: orderIds
-    });
+  async addOrdersToSupply(supplyId, orderIds, enterpriseId = null) {
+    return this._makeRequest('PATCH', `/api/v3/supplies/${supplyId}`, { 
+      orders: orderIds
+    }, enterpriseId);
   }
   
   /**
    * Получение этикетки для поставки
    * @param {string} supplyId - ID поставки
    * @param {string} format - Формат этикетки (pdf, png)
+   * @param {string} enterpriseId - ID предприятия  
    * @returns {Promise<Object>} - Данные этикетки
    */
-  async getSupplySticker(supplyId, format = 'pdf') {
-    return this._callBridge('get_supply_sticker', { 
-      supply_id: supplyId,
+  async getSupplySticker(supplyId, format = 'pdf', enterpriseId = null) {
+    return this._makeRequest('GET', `/api/v3/supplies/${supplyId}/barcode`, {
       file_format: format
-    });
+    }, enterpriseId);
   }
   
   /**
    * Подтверждение заказов
    * @param {Array<string>} orderIds - Массив ID заказов
+   * @param {string} enterpriseId - ID предприятия
    * @returns {Promise<Object>} - Результат операции
    */
-  async acceptOrders(orderIds) {
-    return this._callBridge('accept_orders', { order_ids: orderIds });
+  async acceptOrders(orderIds, enterpriseId = null) {
+    return this._makeRequest('PUT', '/api/v3/orders/accept', { 
+      order_ids: orderIds 
+    }, enterpriseId);
+  }
+
+  /**
+   * Получение аналитики продаж
+   * @param {Object} params - Параметры запроса
+   * @param {string} params.dateFrom - Дата начала периода (YYYY-MM-DD)
+   * @param {string} params.dateTo - Дата окончания периода (YYYY-MM-DD)
+   * @param {string} enterpriseId - ID предприятия
+   * @returns {Promise<Object>} - Данные аналитики
+   */
+  async getAnalytics(params, enterpriseId = null) {
+    if (this.mockMode) {
+      return generateMockData('get_analytics', params);
+    }
+    
+    const queryParams = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      limit: params.limit || 100,
+      offset: params.offset || 0
+    };
+    
+    return this._makeRequest(
+      'GET', 
+      '/api/v1/supplier/sales', 
+      queryParams, 
+      enterpriseId,
+      WB_STATISTICS_API_URL
+    );
+  }
+
+  /**
+   * Получение информации об остатках товаров
+   * @param {Object} params - Параметры запроса
+   * @param {number} params.skip - Смещение (для пагинации)
+   * @param {number} params.take - Количество записей
+   * @param {string} enterpriseId - ID предприятия
+   * @returns {Promise<Object>} - Данные об остатках
+   */
+  async getStocks(params = {}, enterpriseId = null) {
+    if (this.mockMode) {
+      return generateMockData('get_stocks', params);
+    }
+    
+    const queryParams = {
+      skip: params.skip || 0,
+      take: params.take || 100
+    };
+    
+    return this._makeRequest(
+      'GET', 
+      '/api/v3/stocks', 
+      queryParams, 
+      enterpriseId
+    );
+  }
+
+  /**
+   * Поиск товаров в каталоге
+   * @param {Object} params - Параметры запроса
+   * @param {string} params.query - Поисковый запрос
+   * @param {number} params.limit - Лимит результатов
+   * @param {string} enterpriseId - ID предприятия
+   * @returns {Promise<Object>} - Результаты поиска
+   */
+  async searchProducts(params, enterpriseId = null) {
+    if (this.mockMode) {
+      return generateMockData('search_products', params);
+    }
+    
+    const queryParams = {
+      query: params.query,
+      limit: params.limit || 50,
+      offset: params.offset || 0
+    };
+    
+    return this._makeRequest(
+      'GET', 
+      '/api/v1/catalog', 
+      queryParams, 
+      enterpriseId,
+      WB_CATALOG_API_URL
+    );
+  }
+
+  /**
+   * Получение детальной информации о товаре
+   * @param {string} productId - ID товара (артикул/nmID)
+   * @param {string} enterpriseId - ID предприятия
+   * @returns {Promise<Object>} - Информация о товаре
+   */
+  async getProductDetail(productId, enterpriseId = null) {
+    if (this.mockMode) {
+      return generateMockData('get_product_detail', { productId });
+    }
+    
+    return this._makeRequest(
+      'GET', 
+      `/api/v1/catalog/${productId}`, 
+      null, 
+      enterpriseId,
+      WB_CATALOG_API_URL
+    );
   }
 }
 

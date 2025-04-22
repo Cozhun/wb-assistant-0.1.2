@@ -36,5 +36,4 @@ router.get('/health', (req, res) => {
 router.get('/healthcheck', (req, res) => {
   res.status(200).send('OK');
 });
-
 export default router; 

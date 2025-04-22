@@ -10,10 +10,11 @@ import dotenv from 'dotenv';
 import config from './config/index.js';
 import logger from './utils/logger.js';
 import fs from 'fs';
+import wbSyncService from './services/wb-sync.service.js';
 
 // Импорт маршрутов
 import apiRouter from './routes/api.js';
-import wbApiRouter from './routes/wb-api.js';
+import wbApiRouter from './routes/wb-api.routes.js';
 import enterpriseRoutes from './routes/enterprise.routes.js';
 import userRoutes from './routes/user.routes.js';
 import warehouseRoutes from './routes/warehouse.routes.js';
@@ -53,7 +54,7 @@ app.use(express.static(path.join(process.cwd(), 'public')));
 
 // Маршруты API
 app.use('/api', apiRouter);
-app.use('/api/wb', wbApiRouter);
+app.use('/api/wb-api', wbApiRouter);
 app.use('/api/enterprises', enterpriseRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/warehouses', warehouseRoutes);
@@ -69,6 +70,18 @@ app.get('/', (req, res) => {
     environment: process.env.NODE_ENV || 'production'
   });
 });
+
+// Запуск сервиса синхронизации с Wildberries
+try {
+  // Проверяем, включена ли автосинхронизация в конфигурации
+  const wbConfig = config.wildberries || {};
+  if (process.env.WB_AUTO_SYNC === 'true' || (wbConfig && wbConfig.autoSync)) {
+    wbSyncService.startAutomaticSync();
+    logger.info('Служба автоматической синхронизации с Wildberries запущена');
+  }
+} catch (error) {
+  logger.error('Ошибка при запуске сервиса синхронизации с Wildberries:', error);
+}
 
 // Обработка ошибок
 app.use((err, req, res, next) => {
@@ -87,6 +100,31 @@ app.use((req, res) => {
     success: false,
     message: 'Маршрут не найден'
   });
+});
+
+// Обработка сигналов завершения работы
+process.on('SIGTERM', () => {
+  logger.info('Получен сигнал SIGTERM. Завершение работы сервера...');
+  
+  // Останавливаем сервис синхронизации с Wildberries
+  if (wbSyncService.syncIntervalId) {
+    wbSyncService.stopAutomaticSync();
+    logger.info('Служба автоматической синхронизации с Wildberries остановлена');
+  }
+  
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  logger.info('Получен сигнал SIGINT. Завершение работы сервера...');
+  
+  // Останавливаем сервис синхронизации с Wildberries
+  if (wbSyncService.syncIntervalId) {
+    wbSyncService.stopAutomaticSync();
+    logger.info('Служба автоматической синхронизации с Wildberries остановлена');
+  }
+  
+  process.exit(0);
 });
 
 // Запуск сервера
