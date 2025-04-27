@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  # traefik: <--- Удаляем этот сервис
+  #   image: traefik:v2.10
+  #   command:
+  #     - "--api.dashboard=true"
+  #     - "--api.insecure=false"
+  #     - "--providers.docker=true"
+  #     - "--providers.docker.exposedbydefault=false"
+  #     - "--entrypoints.web.address=:80"
+  #     - "--entrypoints.dashboard.address=:8080"
+  #     - "--accesslog=true"
+  #     - "--log.level=INFO"
+  #   ports:
+  #     - "80:80"
+  #     - "8080:8080"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   networks:
+  #     - wb-network # <-- Заменяем на proxy
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.traefik-dashboard.rule=Host(`dashboard.localhost`)"
+  #     - "traefik.http.routers.traefik-dashboard.service=api@internal"
+  #     - "traefik.http.routers.traefik-dashboard.entrypoints=dashboard"
+
+  client:
+    build:
+      context: ./web_client # <-- Исправляем путь к директории клиента
+      dockerfile: Dockerfile
+    labels:
+      # --- Traefik Labels for Client ---
+      - "traefik.enable=true"
+      # Роутер HTTPS для основного домена
+      - "traefik.http.routers.client-secure.rule=Host(`wb-assistant.cozhunhomeserver.crazedns.ru`)" # <-- Ваш основной домен
+      - "traefik.http.routers.client-secure.entrypoints=https"
+      - "traefik.http.routers.client-secure.tls=true"
+      - "traefik.http.routers.client-secure.tls.certresolver=letsencrypt" # <-- Используем Let's Encrypt
+      - "traefik.http.routers.client-secure.service=client-service"
+      # Сервис (указывает на порт клиента внутри контейнера)
+      - "traefik.http.services.client-service.loadbalancer.server.port=80" # <-- Порт вашего клиента, если он отличается, измените
+      # Опционально: редирект с HTTP на HTTPS
+      - "traefik.http.routers.client-http.rule=Host(`cozhunhomeserver.crazedns.ru`)"
+      - "traefik.http.routers.client-http.entrypoints=web" # <-- HTTP entrypoint
+      - "traefik.http.routers.client-http.middlewares=redirect-to-https@docker"
+      # Опционально: Middleware для редиректа (если еще не определен глобально в Traefik)
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      # -----------------------------------
+    depends_on:
+      - server
+    networks:
+      - proxy # <-- Используем сеть proxy
+
+  server:
+    build:
+      context: ./server # Убедитесь, что путь ./server правильный
+      dockerfile: Dockerfile
+    labels:
+      # --- Traefik Labels for Server API ---
+      - "traefik.enable=true"
+      # Роутер HTTPS для API субдомена
+      - "traefik.http.routers.server-api-secure.rule=Host(`api.cozhunhomeserver.crazedns.ru`)" # <-- Ваш API субдомен
+      - "traefik.http.routers.server-api-secure.entrypoints=https"
+      - "traefik.http.routers.server-api-secure.tls=true"
+      - "traefik.http.routers.server-api-secure.tls.certresolver=letsencrypt" # <-- Используем Let's Encrypt
+      - "traefik.http.routers.server-api-secure.service=server-api-service"
+      # Сервис (указывает на порт сервера внутри контейнера)
+      - "traefik.http.services.server-api-service.loadbalancer.server.port=3000" # <-- Порт вашего сервера
+      # Опционально: редирект с HTTP на HTTPS для API
+      - "traefik.http.routers.server-api-http.rule=Host(`api.cozhunhomeserver.crazedns.ru`)"
+      - "traefik.http.routers.server-api-http.entrypoints=web" # <-- HTTP entrypoint
+      - "traefik.http.routers.server-api-http.middlewares=redirect-to-https@docker"
+      # Middleware для удаления префикса /api, если он все еще нужен (но с Host() он обычно не нужен)
+      # Если ваш API ожидает запросы на /api/* внутри контейнера, раскомментируйте:
+      # - "traefik.http.routers.server-api-secure.rule=Host(`api.cozhunhomeserver.crazedns.ru`) && PathPrefix(`/api`)"
+      # - "traefik.http.middlewares.api-stripprefix.stripprefix.prefixes=/api"
+      # - "traefik.http.routers.server-api-secure.middlewares=api-stripprefix@docker"
+      # -------------------------------------
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    env_file:
+      - .env # Убедитесь, что этот файл содержит нужные переменные (например, DATABASE_URL, REDIS_URL)
+    volumes:
+      - ./logs:/app/logs # Убедитесь, что директория ./logs существует или создайте ее
+    networks:
+      - proxy # <-- Используем сеть proxy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:14-alpine
+    ports:
+      - "5432:5432" # Оставьте это, если нужен доступ к БД снаружи сети proxy, иначе можно убрать
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres} # Используем переменные из .env или значения по умолчанию
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-wb_assistant}
+    env_file:
+      - .env # Загружаем переменные из .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"] # Используем переменную окружения
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - proxy # <-- Используем сеть proxy
+    restart: unless-stopped # Добавим политику перезапуска
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379" # Оставьте это, если нужен доступ к Redis снаружи сети proxy, иначе можно убрать
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - proxy # <-- Используем сеть proxy
+    restart: unless-stopped # Добавим политику перезапуска
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  proxy: # <-- Определяем сеть proxy как внешнюю 

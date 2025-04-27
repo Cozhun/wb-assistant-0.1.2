@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  wb-api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=wb-postgres
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - DB_NAME=${POSTGRES_DB:-wb_assistant}
+      - REDIS_HOST=wb-redis
+      - REDIS_PORT=6379
+      - WB_API_KEY=${WB_API_KEY}
+      - WB_API_URL=https://suppliers-api.wildberries.ru
+      - LOG_LEVEL=info
+      - LOG_FILE=logs/app.log
+      - JWT_SECRET=${JWT_SECRET:-change_this_in_production}
+      - TOKEN_EXPIRATION=24h
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - proxy
+      - wb-internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.wb-api.rule=Host(`wb-api.cozhunhomeserver.crazedns.ru`)"
+      - "traefik.http.routers.wb-api.entrypoints=https"
+      - "traefik.http.routers.wb-api.tls=true"
+      - "traefik.http.services.wb-api.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.wb-api-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.wb-api.middlewares=wb-api-headers"
+    depends_on:
+      wb-postgres:
+        condition: service_healthy
+      wb-redis:
+        condition: service_healthy
+
+  wb-postgres:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-wb_assistant}
+    volumes:
+      - wb-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wb-internal
+
+  wb-redis:
+    image: redis:6-alpine
+    restart: unless-stopped
+    volumes:
+      - wb-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wb-internal
+
+volumes:
+  wb-postgres-data:
+  wb-redis-data:
+
+networks:
+  proxy:
+    external: true
+  wb-internal:
+    driver: bridge 
